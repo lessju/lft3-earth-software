@@ -1,0 +1,74 @@
+%YAML 1.2
+# DRAFT DAQIRI receive configuration for one LFT3 RFSoC 4x2 board on a DGX Spark.
+# Modelled on DAQIRI's examples/daqiri_bench_raw_tx_rx_reorder_seq_1024_cpu.yaml.
+# Validate with DAQIRI's config tools before use; fields marked <..> must be filled in.
+#   * PCI address of the ConnectX-7 function carrying the 100G link: `lspci -D | grep -i mellanox`
+#     plus `ibdev2netdev` (each Spark port appears as two functions, one per PCIe Gen5 x4 half).
+#   * UDP destination ports for the channel and ADC-dump streams (not in the packetizer spec yet).
+# GPUDirect RDMA is unavailable on DGX Spark (unified memory), so all regions are host_pinned;
+# the GB10 GPU reads them in place with no copy.
+---
+daqiri:
+  cfg:
+    version: 1
+    stream_type: "raw"
+    engine: "ibverbs"
+    master_core: 3
+    debug: false
+    log_level: "info"
+    memory_regions:
+    - name: "Chan_RX"
+      kind: "host_pinned"
+      affinity: 0
+      num_bufs: 65536          # ~72 ms at 915.5 kpps; raise if rx_out_of_buffer increments
+      buf_size: 8320           # Ethernet frame is 8298 B (14 + 20 + 8 + 8256)
+    - name: "ADC_RX"
+      kind: "host_pinned"
+      affinity: 0
+      num_bufs: 32768          # ~216 ms at the 10 Gb/s dump rate (151 kpps)
+      buf_size: 8320
+    interfaces:
+    - name: "rfsoc0"
+      address: <0000:01:00.0>
+      rx:
+        flow_isolation: true
+        queues:
+        - name: "chan_q"
+          id: 0
+          cpu_core: 9              # pin to a Cortex-X925 performance core; check numbering with `lscpu -e`
+          batch_size: 1024
+          timeout_us: 0
+          memory_regions: ["Chan_RX"]
+        - name: "adc_q"
+          id: 1
+          cpu_core: 10
+          batch_size: 256
+          timeout_us: 1000
+          memory_regions: ["ADC_RX"]
+        flows:
+        - name: "chan_flow"
+          id: 100
+          action: {type: queue, id: 0}
+          match: {udp_dst: <CHANNEL_UDP_PORT>}
+        - name: "adc_flow"
+          id: 101
+          action: {type: queue, id: 1}
+          match: {udp_dst: <ADC_UDP_PORT>}
+        # Hardware reorder needs a contiguous packet sequence number at a fixed bit offset.
+        # The current header packs t (58 b) | bindex (3 b) | fid (3 b), so (word0 >> 3) runs
+        # t*8 + b with b in 0..5 -- two of every eight sequence values never occur.
+        # If the firmware adds   seq32 = (t*6 + b) mod 2^32   in the top half of optional
+        # header word 4, the NIC can place packets directly in time order:
+        # reorder_configs:
+        # - name: "chan_reorder"
+        #   reorder_engine: "hw"
+        #   cyclic_sequence: true
+        #   reorder_type: "cpu"
+        #   memory_region: "Chan_Reorder"      # add a host_pinned region, e.g. 2 x (6*1024*8256) B
+        #   payload_byte_offset: 42
+        #   packet_size: 8256
+        #   flow_ids: [100]
+        #   method:
+        #     seq_packets_per_batch:
+        #       sequence_number: {bit_offset: 592, bit_width: 32}   # (42 + 32) bytes * 8
+        #       packets_per_batch: 6144                              # 1024 spectra x 6 packets

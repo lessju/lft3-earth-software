@@ -1,0 +1,13 @@
+[project]
+name = "lft3"
+version = "0.1.0"
+description = "LFT3-Earth RFSoC packet tools and reference spectrometers"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+[project.optional-dependencies]
+gpu = ["cupy"]
+test = ["pytest"]
+[tool.setuptools.packages.find]
+where = ["python"]
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
