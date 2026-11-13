@@ -1,17 +1,16 @@
-# LFT3-Earth CyberEther plugin.
+# LFT3-Earth real-time runtime (docs/runtime.md, docs/runtime_guide.md).
 #
-# Provides two blocks:
-#   lft3_receiver     DAQIRI (raw ibverbs) receiver for the RFSoC 4x2 channel stream -> GPU tensor
-#   lft3_fbh5_writer  Writes integrated spectra to filterbank-HDF5 (FBH5) with real LFT3 metadata
+#   lft3-capture       one link (DAQIRI raw ibverbs) or a synthetic / pcap source -> the voltage ring
+#   lft3-spectrometer  ring reader: fused fine spectrometer or coarse power -> FBH5 (+ latest snapshot)
+#   lft3-dump          ring reader: triggered raw-voltage window -> GUPPI RAW
 #
-# Build inside the CyberEther CUDA container (see scripts/build.sh). The resulting lft3.cep is loaded
-# next to Stelline's stelline.cep, whose channelizer/detector/integrator blocks sit between ours.
+# Build inside the lft3-runtime image (scripts/build.sh): CUDA 13, rdma-core, meson, cmake.
 
 project(
     'lft3',
     ['c', 'cpp', 'cuda'],
-    version: '0.1.0',
-    meson_version: '>=1.11.0',
+    version: '0.2.0',
+    meson_version: '>=1.4.0',
     default_options: [
         'cpp_std=c++20',
         'warning_level=2',
@@ -21,51 +20,26 @@ project(
     ],
 )
 
-minimum_jetstream_version = '1.16.0'
+add_project_arguments('-DLFT3_VERSION="' + meson.project_version() + '"', language: ['cpp', 'cuda'])
+cuda_arch_args = ['-arch=' + get_option('gpu_arch'), '--expt-relaxed-constexpr']
 
-if not target_machine.system().startswith('linux')
-    error('The LFT3 plugin only supports Linux.')
-endif
+cuda_dep = dependency('cuda', version: '>=12.0', modules: ['cudart_static', 'cuda'], required: true)
 
-py = import('python').find_installation(required: true)
-
-#
-# Dependencies
-#
-
-jetstream_dep = dependency(
-    'jetstream',
-    version: '>=' + minimum_jetstream_version,
-    fallback: ['cyberether', 'libjetstream_dep'],
-    required: true,
-    default_options: ['tests=false', 'examples=false', 'remote=disabled'],
-)
-
-cuda_dep = dependency(
-    'cuda',
-    version: '>=12.0',
-    modules: ['cudart_static', 'cuda'],
-    required: true,
-)
-
-# DAQIRI only compiles its raw-ibverbs engine when these are present; without it the receiver fails at
-# run time with "Engine type 'ibverbs' is not available". Fail the build instead.
+# DAQIRI only compiles its raw-ibverbs engine when these are present; without it capture would fail at run time
+# with "Engine type 'ibverbs' is not available". Fail the build instead.
 cpp = meson.get_compiler('cpp')
 foreach lib : ['ibverbs', 'mlx5']
     if not cpp.find_library(lib, required: false).found()
-        error('lib' + lib + ' not found: build in the lft3-cyberether image (pipeline/docker/Dockerfile).')
+        error('lib' + lib + ' not found: build in the lft3-runtime image (pipeline/docker/Dockerfile).')
     endif
 endforeach
 if not cpp.has_header('infiniband/mlx5dv.h')
     error('infiniband/mlx5dv.h not found: install libibverbs-dev (see pipeline/docker/Dockerfile).')
 endif
 
-daqiri_dep = subproject(
-    'daqiri',
-    default_options: ['default_library=static', 'b_staticpic=true'],
-).get_variable('daqiri_dep')
+daqiri_dep = subproject('daqiri', default_options: ['default_library=static', 'b_staticpic=true']).get_variable('daqiri_dep')
 
-# HDF5 upstream only builds with CMake (cmake must be on PATH).
+# HDF5 upstream only builds with CMake.
 cmake = import('cmake')
 hdf5_options = cmake.subproject_options()
 hdf5_options.add_cmake_defines({
@@ -80,104 +54,46 @@ hdf5_options.add_cmake_defines({
     'HDF5_BUILD_TOOLS': false,
     'BUILD_TESTING': false,
 })
-hdf5_dep = cmake.subproject('hdf5', options: hdf5_options).dependency('hdf5-static')
+# The static library needs libm / libdl / threads from the consumer.
+hdf5_dep = declare_dependency(dependencies: [
+    cmake.subproject('hdf5', options: hdf5_options).dependency('hdf5-static'),
+    cpp.find_library('m'), cpp.find_library('dl'), dependency('threads'),
+])
 meson.override_dependency('hdf5', hdf5_dep)
+h5dsc99_dep = subproject('h5dsc99', default_options: ['default_library=static', 'b_staticpic=true']).get_variable('lib_h5dsc99_dep')
+filterbankc99_dep = subproject('filterbankc99', default_options: ['default_library=static', 'b_staticpic=true']).get_variable('lib_filterbankc99_dep')
 
-h5dsc99_dep = subproject(
-    'h5dsc99',
-    default_options: ['default_library=static', 'b_staticpic=true'],
-).get_variable('lib_h5dsc99_dep')
+inc = include_directories('src')
 
-filterbankc99_dep = subproject(
-    'filterbankc99',
-    default_options: ['default_library=static', 'b_staticpic=true'],
-).get_variable('lib_filterbankc99_dep')
+common_lib = static_library('lft3_common', ['src/common/ring.cc'], include_directories: inc,
+                            dependencies: [cuda_dep])
+common_dep = declare_dependency(include_directories: inc, link_with: common_lib, dependencies: [cuda_dep])
 
-dep_lst = [jetstream_dep, cuda_dep, daqiri_dep, hdf5_dep, h5dsc99_dep, filterbankc99_dep]
-
-#
-# Sources
-#
-
-inc_lst = [include_directories('include', 'src')]
-src_lst = []
-cuda_lst = []
-plugin_test_lst = []
-
-conf = configuration_data()
-conf.set_quoted('LFT3_PLUGIN_VERSION', meson.project_version())
-configure_file(output: 'lft3_config.hh', configuration: conf)
-inc_lst += include_directories('.')
-
-subdir('src')
-
-device_library = static_library(
-    'lft3_device',
-    cuda_lst,
-    include_directories: inc_lst,
-    dependencies: [cuda_dep],
-    cuda_args: ['-Xcompiler=-fPIC', '--expt-relaxed-constexpr'],
-    install: false,
+capture_lib = static_library(
+    'lft3_capture',
+    ['src/capture/assembler.cc', 'src/capture/daqiri_config.cc', 'src/capture/pcap.cc', 'src/capture/scatter.cu'],
+    include_directories: inc,
+    dependencies: [cuda_dep, daqiri_dep],
+    cuda_args: cuda_arch_args,
 )
+capture_dep = declare_dependency(link_with: capture_lib, dependencies: [common_dep, daqiri_dep])
 
-plugin_library = static_library(
-    'lft3_code',
-    src_lst,
-    include_directories: inc_lst,
-    dependencies: dep_lst,
-    link_with: device_library,
-    gnu_symbol_visibility: 'hidden',
-    pic: true,
-    install: false,
+spec_lib = static_library(
+    'lft3_spectrometer',
+    ['src/spectrometer/finespec.cu', 'src/spectrometer/fbh5_file.cc'],
+    include_directories: inc,
+    dependencies: [cuda_dep, hdf5_dep, h5dsc99_dep, filterbankc99_dep],
+    cuda_args: cuda_arch_args,
 )
+spec_dep = declare_dependency(link_with: spec_lib, dependencies: [common_dep, hdf5_dep, h5dsc99_dep, filterbankc99_dep])
 
-plugin_code_dep = declare_dependency(
-    include_directories: inc_lst,
-    dependencies: dep_lst,
-    link_whole: plugin_library,
-)
+dump_lib = static_library('lft3_dump', ['src/dump/guppi.cc'], include_directories: inc)
+dump_dep = declare_dependency(link_with: dump_lib, dependencies: [common_dep])
+
+executable('lft3-capture', 'src/capture/main.cc', dependencies: [capture_dep], link_language: 'cpp')
+executable('lft3-spectrometer', 'src/spectrometer/main.cc', dependencies: [spec_dep], link_language: 'cpp')
+executable('lft3-dump', 'src/dump/main.cc', dependencies: [dump_dep, spec_dep], link_language: 'cpp')
 
 if get_option('tests')
     subdir('tests')
 endif
-
-#
-# Packaging: lft3.cep
-#
-
-plugin_module = shared_module(
-    'lft3',
-    [],
-    dependencies: plugin_code_dep,
-    gnu_symbol_visibility: 'hidden',
-    link_language: 'cpp',
-    link_args: ['-Wl,-Bsymbolic', '-Wl,--no-as-needed'],
-    name_prefix: '',
-    build_by_default: false,
-    install: false,
-)
-
-plugin_examples = files('examples/lft3-spectrometer.yml', 'examples/lft3-synthetic.yml',
-                        'examples/lft3-stelline-chain.yml', 'examples/lft3-monitor.yml',
-                        'examples/lft3-monitor-synthetic.yml')
-
-custom_target(
-    'lft3_cep',
-    input: [plugin_module] + plugin_examples,
-    output: 'lft3.cep',
-    command: [
-        py, files('tools/bundler.py'),
-        '--output', '@OUTPUT@',
-        '--name', meson.project_name(),
-        '--version', meson.project_version(),
-        '--minimum-jetstream-version', minimum_jetstream_version,
-        '--target', 'path=@INPUT0@,system=' + host_machine.system() + ',device=cuda,arch=' + host_machine.cpu_family(),
-        '--example', '@INPUT1@',
-        '--example', '@INPUT2@',
-        '--example', '@INPUT3@',
-        '--example', '@INPUT4@',
-        '--example', '@INPUT5@',
-    ],
-    build_by_default: true,
-    install: false,
-)

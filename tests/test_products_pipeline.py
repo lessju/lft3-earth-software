@@ -1,11 +1,10 @@
 import h5py
 import numpy as np
 import pytest
-import yaml
 
 from lft3.board.capture import Capture
 from lft3.cli import plot as plot_cli
-from lft3.pipeline.flowgraph import PipelineOptions, build_flowgraph
+from lft3.pipeline.runtime import RunOptions, plan_run
 from lft3.products import captures, fbh5, plot
 
 
@@ -76,30 +75,60 @@ def test_plot_cli_on_spectra(tmp_path, capsys):
     assert (tmp_path / "s_spectrum.png").exists() and (tmp_path / "s_waterfall.png").exists()
 
 
+def _arg(argv, key):
+    return argv[argv.index(key) + 1]
+
+
 @pytest.mark.parametrize("source", ["network", "synthetic", "file"])
-def test_flowgraph_generation(cfg, source):
-    opts = PipelineOptions(source=source, file="/data/cap.pcap" if source == "file" else None,
-                           fft_length=256, integration_s=0.5, channel_start=1024, channel_count=2048, monitor=True)
-    doc = yaml.safe_load(build_flowgraph(cfg, opts, "/out"))
-    nodes = {n["name"]: n for n in doc["graph"]}
-    rx = nodes["receiver"]["config"]
-    assert rx["source"] == source and rx["fftLength"] == 256 and rx["segments"] == 4
-    assert rx["channelStart"] == 1024 and rx["channelCount"] == 2048
-    assert rx["boardId"] == cfg.board_id and rx["interfaceAddress"] == cfg.receiver_interface
-    assert rx["inputBeam"] == "[0, 0, 1, 1]" and rx["inputPolarization"] == "[0, 1, 0, 1]"
-    blocks = nodes["finespec"]["config"]["integrationBlocks"]
-    assert blocks == round(0.5 * 152587.890625 / 1024)
-    assert nodes["writer"]["config"]["ncoMHz"] == -2031.25
-    assert nodes["quicklook"]["config"]["mode"] == "coarse"
-    assert "beam1_waterfall" in nodes
+def test_run_plan(cfg, source, tmp_path):
+    opts = RunOptions(source=source, file="/data/cap.pcap" if source == "file" else None, fft_length=256,
+                      integration_s=0.5, channel_start=1024, channel_count=2048, lossless=source != "network",
+                      quicklook_s=0.1)
+    plan = plan_run(cfg, opts, "/data", str(tmp_path / "run"), "20261113T000000")
+    roles = [p.role for p in plan.processes]
+    assert roles == ["capture", "spectrometer", "quicklook", "dump"]
+    cap, spec, ql, dump = plan.processes
+    stream = f"{cfg.name}-link0"
+    assert all(p.stream == stream and _arg(p.argv, "--stream") == stream for p in plan.processes)
+    assert _arg(cap.argv, "--source") == source and _arg(cap.argv, "--channels") == "1024:2048"
+    assert _arg(cap.argv, "--board-id") == str(cfg.board_id)
+    assert _arg(cap.argv, "--input-beam") == "0,0,1,1" and _arg(cap.argv, "--input-pol") == "0,1,0,1"
+    assert cap.privileged == (source == "network")
+    assert cap.cpuset == "5,6,7"
+    if source == "network":
+        assert _arg(cap.argv, "--interface") == cfg.receiver_interface
+        assert "--backpressure" not in cap.argv
+    else:
+        assert _arg(cap.argv, "--wait-readers") == "2" and "--lossless" in spec.argv and "--lossless" in ql.argv
     if source == "file":
-        assert rx["sourceFile"] == "/data/cap.pcap"
+        assert _arg(cap.argv, "--file") == "/data/cap.pcap" and "/data" in cap.mounts
+    assert _arg(spec.argv, "--fft-length") == "256" and _arg(spec.argv, "--mode") == "fine"
+    assert _arg(spec.argv, "--nco-mhz") == "-2031.25" and _arg(spec.argv, "--output-dir") == f"/data/spectra/{cfg.name}"
+    assert _arg(spec.argv, "--coarse-dir") == f"/data/spectra/{cfg.name}/quicklook"
+    assert _arg(spec.argv, "--latest").endswith("latest")
+    assert _arg(ql.argv, "--mode") == "coarse" and _arg(ql.argv, "--integration") == "0.1"
+    assert _arg(ql.argv, "--latest").endswith("latest_fast") and "--no-record" in ql.argv
+    assert _arg(dump.argv, "--output-dir") == f"/data/dumps/{cfg.name}"
+    assert plan.obs_id == f"{cfg.name}-20261113T000000" and _arg(cap.argv, "--obs-id") == plan.obs_id
+    docker = spec.docker_argv(uid=1000, gid=1000)
+    assert docker[:3] == ["docker", "run", "--rm"] and "--ipc=host" in docker and "--privileged" not in docker
+    assert "--privileged" in cap.docker_argv() or source != "network"
 
 
-def test_flowgraph_rejects_bad_options(cfg):
-    with pytest.raises(ValueError):
-        build_flowgraph(cfg, PipelineOptions(fft_length=100), "/out")
-    with pytest.raises(ValueError):
-        build_flowgraph(cfg, PipelineOptions(channel_start=512), "/out")
-    with pytest.raises(ValueError):
-        build_flowgraph(cfg, PipelineOptions(source="file"), "/out")
+def test_run_plan_two_links(cfg, tmp_path):
+    from lft3.config import LinkConfig
+    cfg.links.append(LinkConfig("link1", "0000:01:00.1", 15, 16, 17, beam_offset=2, reader_cpus="18,19"))
+    plan = plan_run(cfg, RunOptions(source="synthetic", dump=False), "/data", str(tmp_path))
+    assert plan.streams() == [f"{cfg.name}-link0", f"{cfg.name}-link1"]
+    l1 = [p for p in plan.processes if p.stream.endswith("link1")]
+    assert [p.role for p in l1] == ["capture", "spectrometer"]
+    assert _arg(l1[1].argv, "--beam-offset") == "2" and l1[0].cpuset == "15,16,17" and l1[1].cpuset == "18,19"
+    only = plan_run(cfg, RunOptions(source="synthetic", links=["link1"]), "/data", str(tmp_path))
+    assert only.streams() == [f"{cfg.name}-link1"]
+
+
+def test_run_plan_rejects_bad_options(cfg, tmp_path):
+    for bad in (RunOptions(fft_length=100), RunOptions(channel_start=512), RunOptions(source="file"),
+                RunOptions(lossless=True), RunOptions(ring_seconds=1.0, dump_max_s=1.0)):
+        with pytest.raises(ValueError):
+            plan_run(cfg, bad, "/data", str(tmp_path))

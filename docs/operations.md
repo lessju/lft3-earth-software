@@ -47,48 +47,34 @@ are only ADC noise (~12 counts RMS), so the dump is mostly 0 and ±1. For noise-
 
 ## 3. The real-time pipeline (`lft3-pipeline`)
 
-Receiver → fine spectrometer → FBH5 files, for one board (the station's first unless `-b`). Each run gets
-`<data_dir>/runs/<UTC>_<board>_<source>/` (the generated flowgraph and the full log); spectra go to
-`<data_dir>/spectra/<board>/`.
+Full guide: `docs/user_guide.md` (how it works inside: `docs/runtime.md`). Per link of a board: lft3-capture →
+GPU ring → lft3-spectrometer (fine + coarse FBH5) and lft3-dump (GUPPI RAW on trigger), each in its own container.
 
 ```bash
 lft3-pipeline run                                   # live stream, 1.19 kHz channels, 1 s spectra, until Ctrl-C
 lft3-pipeline run --duration 600 --integration 10   # 10 minutes of 10 s spectra
 lft3-pipeline run --fft-length 1024 --channels 2048:1024    # 149 Hz channels on coarse channels 2048-3071
-lft3-pipeline run --monitor --remote                # + live waterfall: open the printed Join URL in a browser
 lft3-pipeline run --source file --file cap.pcap --loop      # replay a tcpdump capture (no board needed)
 lft3-pipeline run --source synthetic --no-record    # generated noise + tone (no board needed)
-lft3-pipeline run --dry-run                         # show the flowgraph and the docker command only
-lft3-pipeline flowgraph --monitor -o my.yml         # write a flowgraph to edit or open in CyberEther
+lft3-pipeline run --dry-run                         # show the docker commands only
+lft3-pipeline status                                # every ring on this host: rate, loss, readers
+lft3-pipeline trigger --label test                  # raw-voltage dump of every link (GUPPI RAW)
+lft3-pipeline stop                                  # stop a run from another terminal
 ```
 
-Stopping: Ctrl-C or `--duration` make `lft3-pipeline` run `docker stop lft3-pipeline`, which sends SIGINT
-(CyberEther's clean shutdown: files closed) and SIGKILL after 30 s. By hand, use the same `docker stop lft3-pipeline`.
-Only one pipeline container runs at a time; a second `run` is refused.
+Stopping: Ctrl-C, `--duration` or `lft3-pipeline stop` stop the readers (files closed) and then the captures.
+Only one run per board at a time. Run directory `<data_dir>/runs/<UTC>_<board>_<source>/`: one log per process,
+`plan.txt`, `status.jsonl`, `nic-<link>.csv` (NIC drop/pause counters, also printed when they move), `latest/`.
+`lft3-board trigger` and `lft3-pipeline trigger` append to `<data_dir>/triggers.log`.
 
-What a network run writes to its run directory:
-* `pipeline.log`: the full container log, every line prefixed with UTC time. The receiver prints a summary every 5 s
-  (rate, blocks, `missing`, `late`, `no-buffer`).
-* `nic.csv`: `ethtool -S` deltas of the receiving NIC every 5 s. A rise in `rx_out_of_buffer`, `rx_discards_phy`,
-  CRC errors or `tx_global_pause` is also printed. Missing packets with these flat means the packets never reached
-  the host (board or link).
-* `lft3-board trigger` appends its UTC time to `<data_dir>/triggers.log`, so loss can be matched against DDR dumps.
-
-Soak test (1 h, with a dump every 5 min):
+Soak test (1 h, with a DDR dump every 5 min):
 ```bash
 lft3-pipeline run --duration 3600 &
 for i in $(seq 11); do sleep 300; lft3-board trigger; done
 ```
 
-Notes:
-
-* Docker-group membership is enough: the container runs privileged as root (DAQIRI needs raw NIC access),
-  which also means the files it writes are owned by root (group-readable).
-* The receiver prints a summary every 5 s. Healthy: `1.00x real time`, `missing` and `no-buffer` flat.
-* `--source file` replays whole blocks of the capture; with `--loop` the time axis continues seamlessly.
-  Captures made with tcpdump have most packets missing (the kernel cannot keep up), and those are zero-filled.
-* `--fast` (synthetic/file) runs as fast as the GPU allows instead of in real time.
-* Limits: `--fft-length` ≤ 2048 (shared-memory FFT); channel ranges in whole packets (multiples of 1024).
+Healthy: `60.8 Gb/s`, `missing packets` flat, readers `lag 0, over 0`. Limits: `--fft-length` ≤ 1024 (one block),
+channel ranges in whole packets (multiples of 1024).
 
 ## 4. Looking at the files (`lft3-plot`)
 
@@ -113,6 +99,18 @@ c = captures.load(capture_path)                                        # c.data 
 ```
 
 FBH5 files also open with blimpy, turboSETI and hyperseti.
+
+### Interactive viewer (`lft3-view`)
+
+For browsing whole files (pan/zoom from the full band down to single fine channels):
+
+```bash
+make viewer                     # once; builds in the lft3-runtime container
+tools/viewer/build/lft3-view    # prints http://<spark>:8687/?token=...; open it in a browser
+```
+
+An overview of a 1-hour file takes ~1.7 s and zooms take tens of ms. It also follows files that are still being
+written. See `tools/viewer/README.md`.
 
 ## 5. What you should see with nothing connected (2026-11-12)
 

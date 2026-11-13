@@ -32,4 +32,4 @@
      it must process > 3.75 G complex samples/s.
    * Cross-check its output against `src/lft3/dsp/finespec.py` on the same data.
 6. **Live pipeline.** DAQIRI → corner turn → rawspec, with the tone test repeated end-to-end at 1.16 Hz resolution.
-7. **Viewer.** Feed coarse or zoomed fine spectra to CyberEther.
+7. **Viewer.** Look at coarse or zoomed fine spectra with `lft3-view` / `lft3-plot` (`docs/user_guide.md`).

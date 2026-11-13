@@ -13,7 +13,8 @@ adc:
   map: [[0, 0], [0, 1], [2, 0], [2, 1]]   # (tile, block) of ADC inputs 0..3
   tile_mask: 0x5
   nco_mhz: -2031.25                 # exact NCO; the packet header carries round() of this
-  # Input -> beam/polarisation. ASSUMED (ADC_MAP order), not yet verified with a signal.
+  # Input -> beam/polarisation. ASSUMED (ADC_MAP order). Connectors: the SMA the lab calls "ADC 0" feeds
+  # input 3 = (tile 2, block 1) (tone test 2026-11-13); the other three connectors are not yet mapped.
   inputs:
     - {beam: 0, pol: X}
     - {beam: 0, pol: Y}
@@ -37,11 +38,27 @@ network:
   adc_port: 40000
   expected_packet_rate: 915527      # channel packets/s with packet_mask 0x3f
 
-receiver:                           # the host side of this board's stream (DGX Spark)
-  interface: '0000:01:00.0'         # ConnectX function (PCI) receiving the stream = enp1s0f0np0
-  master_core: 5                    # Cortex-X925 cores 5-9, 15-19
-  worker_core: 6
-  processing_core: 7
+receiver:                           # the host side of this board's streams (DGX Spark)
+  # One entry per 100 GbE link = one lft3-capture process and one ring "<board>-<link>". Cores: Cortex-X925
+  # 5-9, 15-19. Each link needs its own DAQIRI master/worker and processing core; readers (spectrometer,
+  # quick-look, dump) of a link run on reader_cpus.
+  links:
+    - name: link0
+      interface: '0000:01:00.0'     # ConnectX function = enp1s0f0np0
+      master_core: 5
+      worker_core: 6
+      processing_core: 7
+      beam_offset: 0                # this link carries beams 0, 1
+      reader_cpus: '8,9,0-4'
+    # The second link (same packet format, beams 2, 3) once it is cabled. Interface = the PCI function of the
+    # Spark's other QSFP port (enp1s0f1np1 = 0000:01:00.1); check udp_port / source_ip against the firmware.
+    # - name: link1
+    #   interface: '0000:01:00.1'
+    #   master_core: 15
+    #   worker_core: 16
+    #   processing_core: 17
+    #   beam_offset: 2
+    #   reader_cpus: '18,19,10-14'
 
 timing:
   # pps: none | temporary | reference. Only a "reference" PPS (GPS-disciplined, properly distributed)

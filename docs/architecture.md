@@ -1,7 +1,7 @@
 # DGX Spark receive + spectrometer architecture (one RFSoC 4x2 board, one 100G link)
 
-> **Status (2026-11-12):** the first implementation is a CyberEther plugin (`pipeline/`, described in
-> `docs/pipeline.md`): DAQIRI receiver → fused fine spectrometer (1.19 kHz, interim) → FBH5. The rawspec
+> **Status (2026-11-13):** implemented as the ring-buffer runtime in `pipeline/` (`docs/runtime.md`): DAQIRI capture →
+> GPU voltage ring → fused fine spectrometer (1.19 kHz, interim) → FBH5, plus GUPPI RAW dumps. The rawspec
 > design and sizing below remain the plan for Hz-level resolution, which needs cuFFT-sized FFTs. The
 > "corner turn" here is the receiver's scatter kernel. The 4 inputs are 2 dual-pol beams, Stokes I formed on the GPU.
 
@@ -19,7 +19,7 @@ RFSoC 4x2 ──100GbE──► ConnectX-7 (one PCIe Gen5 x4 half, ~95 Gb/s usab
      product 0: fine,   Nt = 2^17 → 1.164 Hz,   Na ≈ 12 (≈10 s)
      product 1: coarse, small Nt, ms integrations (monitoring / RFI / quick-look)
           ▼ dump callback
-   FBH5/SIGPROC files, and/or reduced spectra → CyberEther or another viewer
+   FBH5/SIGPROC files, and/or reduced spectra → lft3-view or another viewer
 ```
 
 ## Why these components
@@ -91,7 +91,9 @@ reads the DAQIRI buffers in place, zero-fills missing packets, and counts them p
 * GB10 is Arm64 (10 Cortex-X925 + 10 Cortex-A725). Pin the polling thread and corner-turn launcher to X925 cores.
 * rawspec's default `SMS` list stops at sm_75. Build with the GB10 compute capability (`nvidia-smi --query-gpu=compute_cap`).
 
-## Where CyberEther fits
+## Where the viewer fits
 
-Use it as a live viewer or flowgraph on the reduced products: coarse spectra at ms–s cadence, or zoomed fine-resolution
-windows. It does not sit in the 60 Gb/s path. Its ATA capture plugin (Stelline) is built around GPUDirect, which Spark lacks.
+Live views and browsing use the reduced products (coarse spectra at ~1 s, zoomed fine-resolution windows):
+`lft3-view`, `lft3-plot`, or a reader of the latest snapshot. Nothing interactive sits in the 60 Gb/s path.
+CyberEther was used for the first implementation. It was replaced because its lock-step scheduler lets a slow
+consumer stall the receiver (`docs/runtime.md` §2).

@@ -1,0 +1,30 @@
+diff -ru a/include/h5dsc99/h5_dataspace.h b/include/h5dsc99/h5_dataspace.h
+--- a/include/h5dsc99/h5_dataspace.h	2026-11-13 11:49:21.265987603 +0100
++++ b/include/h5dsc99/h5_dataspace.h	2026-11-13 11:49:21.280273225 +0100
+@@ -19,7 +19,10 @@
+   H5_FILTER_FLAG_DEFLATE_7 = 7,
+   H5_FILTER_FLAG_DEFLATE_8 = 8,
+   H5_FILTER_FLAG_DEFLATE_9 = 9,
+-  H5_FILTER_FLAG_SHUFFLE = 10
++  H5_FILTER_FLAG_SHUFFLE = 10,
++  // byte shuffle followed by deflate at level (flag - 20): the usual choice for float spectra
++  H5_FILTER_FLAG_SHUFFLE_DEFLATE_0 = 20,
++  H5_FILTER_FLAG_SHUFFLE_DEFLATE_9 = 29
+ };
+ 
+ typedef struct {
+diff -ru a/src/h5_dataspace.c b/src/h5_dataspace.c
+--- a/src/h5_dataspace.c	2026-11-13 11:49:21.265223359 +0100
++++ b/src/h5_dataspace.c	2026-11-13 11:49:21.280434794 +0100
+@@ -75,6 +75,11 @@
+ 			if(dataspace->filter_flag == H5_FILTER_FLAG_SHUFFLE){
+ 				H5Pset_shuffle(dataspace->P_id);
+ 			}
++			if(dataspace->filter_flag >= H5_FILTER_FLAG_SHUFFLE_DEFLATE_0 &&
++			   dataspace->filter_flag <= H5_FILTER_FLAG_SHUFFLE_DEFLATE_9){
++				H5Pset_shuffle(dataspace->P_id);
++				H5Pset_deflate(dataspace->P_id, dataspace->filter_flag - H5_FILTER_FLAG_SHUFFLE_DEFLATE_0);
++			}
+ 		}
+ 	}
+ 	dataspace->D_id = H5Dcreate(dest_id, dataspace->name, dataspace->Tmem_id, dataspace->S_id, H5P_DEFAULT, dataspace->P_id, H5P_DEFAULT);

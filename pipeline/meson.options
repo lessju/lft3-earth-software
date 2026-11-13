@@ -1,0 +1,2 @@
+option('tests', type: 'boolean', value: true, description: 'Build the unit tests.')
+option('gpu_arch', type: 'string', value: 'sm_121', description: 'nvcc -arch (GB10 = sm_121).')

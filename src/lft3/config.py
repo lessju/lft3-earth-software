@@ -32,6 +32,20 @@ class InputConfig:
 
 
 @dataclass
+class LinkConfig:
+    """One 100 GbE link from the board to this host: one lft3-capture process and one ring."""
+    name: str                          # "link0", "link1": the stream is "<board>-<link>"
+    interface: str                     # ConnectX PCI function, e.g. 0000:01:00.0
+    master_core: int = 5
+    worker_core: int = 6
+    processing_core: int = 7
+    udp_port: int = 60000
+    source_ip: str = ""                # flow match on the board's IP ("" = any)
+    beam_offset: int = 0               # global beam number of this link's beam 0 (file names, ibeam)
+    reader_cpus: str = ""              # cpuset for this link's reader containers ("" = any)
+
+
+@dataclass
 class BoardConfig:
     name: str
     host: str
@@ -62,7 +76,18 @@ class BoardConfig:
     expected_clk_period: int = 156250000
     ssh_user: str = "casper"
     sensors_enabled: bool = False
+    links: list[LinkConfig] = field(default_factory=list)
     path: str | None = field(default=None, compare=False)
+
+    def stream(self, link: LinkConfig) -> str:
+        """Ring / stream name of a link: <board>-<link>."""
+        return f"{self.name}-{link.name}"
+
+    def link(self, name: str) -> LinkConfig:
+        for lk in self.links:
+            if lk.name == name:
+                return lk
+        raise ConfigError(f"board {self.name} has no link '{name}' (have: {', '.join(x.name for x in self.links)})")
 
     @property
     def header_nco(self) -> int:
@@ -116,11 +141,42 @@ def parse_board_config(data: dict, path: str | None = None) -> BoardConfig:
         sensors_enabled=bool(_get(data, "sensors.enabled", False, required=False)),
         path=path,
     )
+    cfg.links = _parse_links(data, cfg)
     _validate(cfg)
     return cfg
 
 
+def _parse_links(data: dict, c: BoardConfig) -> list[LinkConfig]:
+    """receiver.links: [...] (one entry per 100 GbE link); the older single-link keys receiver.interface /
+    master_core / worker_core / processing_core describe one link called link0."""
+    raw = _get(data, "receiver.links", None, required=False)
+    if raw is None:
+        raw = [{"name": "link0", "interface": c.receiver_interface, "master_core": c.receiver_master_core,
+                "worker_core": c.receiver_worker_core, "processing_core": c.receiver_processing_core}]
+    links = []
+    for i, d in enumerate(raw):
+        if "interface" not in d:
+            raise ConfigError(f"receiver.links[{i}] needs an interface")
+        links.append(LinkConfig(
+            name=str(d.get("name", f"link{i}")), interface=str(d["interface"]),
+            master_core=int(d.get("master_core", 5)), worker_core=int(d.get("worker_core", 6)),
+            processing_core=int(d.get("processing_core", 7)), udp_port=int(d.get("udp_port", c.channel_port)),
+            source_ip=str(d.get("source_ip", c.source_ip)), beam_offset=int(d.get("beam_offset", 2 * i)),
+            reader_cpus=str(d.get("reader_cpus", ""))))
+    if links:
+        first = links[0]
+        c.receiver_interface, c.receiver_master_core = first.interface, first.master_core
+        c.receiver_worker_core, c.receiver_processing_core = first.worker_core, first.processing_core
+    return links
+
+
 def _validate(c: BoardConfig) -> None:
+    names = [lk.name for lk in c.links]
+    if not names or len(set(names)) != len(names) or any(not n or "/" in n for n in names):
+        raise ConfigError("receiver.links needs at least one link, with unique plain names")
+    cores = [x for lk in c.links for x in (lk.master_core, lk.worker_core, lk.processing_core)]
+    if len(set(cores)) != len(cores):
+        raise ConfigError("receiver.links: every link needs its own master/worker/processing cores")
     if not 0 <= c.board_id <= 7:
         raise ConfigError("board_id must be 0..7 (3-bit fid)")
     if len(c.adc_map) != 4 or len(c.inputs) != 4:

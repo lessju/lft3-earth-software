@@ -17,6 +17,7 @@ __pycache__/
 
 # C++ plugin build (pipeline/subprojects has its own .gitignore)
 pipeline/build/
+tools/viewer/build/
 
 # Editors
 .vscode/

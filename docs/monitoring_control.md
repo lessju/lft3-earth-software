@@ -15,7 +15,7 @@ control") and 8 ("System management, monitoring and control") of `docs/full_arch
 | A register map describing what each register does | `lft3/board/registers.py` (first version; firmware request #10 asks for the authoritative one) |
 | Physical metrics: temperatures, voltages, currents, power | `lft3/board/sensors.py` reads the board's sysfs over SSH. **Needs an SSH key** on the board |
 | Firmware metrics: error counts, packet metrics | `lft3/board/telemetry.py`: snapshots, counter rates, health checks |
-| Diagnostic spectra, antenna/beam RMS | Firmware FFT/ADC snapshots (`lft3-board snapshot`); live waterfall in the GPU pipeline (docs/pipeline.md §4) |
+| Diagnostic spectra, antenna/beam RMS | Firmware FFT/ADC snapshots (`lft3-board snapshot`); coarse quick-look spectra from the GPU runtime (docs/user_guide.md §5, §7) |
 | Single source of truth for instrument configuration, in git | `config/boards/<name>.yaml`, loaded by `lft3.config` |
 | Coordinator on a master node; lock against concurrent reconfiguration | Per-board lock file now. The coordinator is still to design (§6) |
 | CLI first; metrics/logging/alerting (Prometheus/Grafana suggested) | `lft3-board` CLI; Prometheus `/metrics` endpoint and JSON lines |
@@ -166,7 +166,7 @@ only publishes what it reads.
 4. **Coordinator:** one process on the master node owning system state (boards, receivers, observation
    config), with the board lock moved from `/tmp` to the coordinator. The CLI becomes a client of it.
    Candidates: a small service with a REST/katcp interface. Decide once there is more than one board.
-5. **Pipeline metrics:** the receiver already counts packets/blocks/loss (docs/pipeline.md §2); exporting
+5. **Pipeline metrics:** the runtime counts packets/blocks/loss/reader lag in each ring and `lft3-pipeline run --metrics-port` exports them (docs/user_guide.md §5); exporting
    those to the same Prometheus is the next step for end-to-end monitoring.
 6. **Firmware diagnostics:** `f_engineN_power_snapshot*`, `ewma_snapshot*` and the ADC snapshots
    (`listener.py` reads them) could feed low-rate diagnostic spectra and per-input RMS (arch doc §2).
