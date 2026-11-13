@@ -2,7 +2,7 @@
 
     python figures.py OUT_DIR
 
-Each figure is drawn with matplotlib patches in one visual language:
+Each figure is drawn with matplotlib patches and saved as SVG (text kept as text) in one visual language:
   board / FPGA  orange   network  grey   host CPU  blue   GPU  green   storage  purple   readers  teal
 Numbers in the figures are the measured / configured values documented in docs/runtime.md.
 """
@@ -20,7 +20,8 @@ C = {
     "gpu": ("#d7f0d4", "#2e8b3a"), "store": ("#e8dcf4", "#6b3fa0"), "reader": ("#d2f1ef", "#1f8a83"),
     "mem": ("#fff6c9", "#a08800"), "warn": ("#fadbd8", "#b03a2e"), "plain": ("#ffffff", "#333333"),
 }
-plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 9, "axes.titlesize": 10})
+plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 9, "axes.titlesize": 10,
+                     "svg.fonttype": "none"})   # SVG keeps text as text (searchable, crisp); fonts mapped in build.py
 
 
 def fig(w, h):
@@ -57,8 +58,13 @@ def arrow(ax, x0, y0, x1, y1, text="", color="#333333", lw=1.4, fs=7.5, style="-
 
 
 def save(f, out, name):
-    f.savefig(out / f"{name}.png", dpi=220, bbox_inches="tight", pad_inches=0.05)
+    """Vector SVG (embedded in the PDF as drawings by build.py; usable in other documents as is)."""
+    path = out / f"{name}.svg"
+    f.savefig(path, bbox_inches="tight", pad_inches=0.05)
     plt.close(f)
+    # keep spaces in labels as drawn (SVG collapses whitespace unless told otherwise)
+    svg = path.read_text()
+    path.write_text(svg.replace("<svg ", '<svg xml:space="preserve" ', 1))
 
 
 # ------------------------------------------------------------------------------------------------ figures
@@ -430,7 +436,8 @@ def warp_fft(out):
              "   summed over the 8 segments in registers",
              "6  write 4 fftshifted bins per lane"]
     for i, t in enumerate(steps):
-        ax.text(3, 31.5 - i * 2.35, t, fontsize=7.2, family="DejaVu Sans Mono" if t.startswith("   ") else None)
+        indent = t.startswith("   ")
+        ax.text(3, 31.5 - i * 2.35, t, fontsize=7.2, family="DejaVu Sans Mono" if indent else None)
     bx, dx = 64, 11
     for s_ in range(4):
         for l in range(8):

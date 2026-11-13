@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xml:space="preserve" xmlns:xlink="http://www.w3.org/1999/xlink" width="621pt" height="328.752pt" viewBox="0 0 621 328.752" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-11-13T21:21:28.022652</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 328.752 
+L 621 328.752 
+L 621 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 12.4164 70.23888 
+L 151.0236 70.23888 
+Q 154.3716 70.23888 154.3716 66.91248 
+L 154.3716 17.90352 
+Q 154.3716 14.57712 151.0236 14.57712 
+L 12.4164 14.57712 
+Q 9.0684 14.57712 9.0684 17.90352 
+L 9.0684 66.91248 
+Q 9.0684 70.23888 12.4164 70.23888 
+z
+" clip-path="url(#p71270812b8)" style="fill: #d6e6f7; stroke: #2f6db0; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 182.0484 308.63088 
+L 606.3516 308.63088 
+Q 611.9316 308.63088 611.9316 303.08688 
+L 611.9316 9.03312 
+Q 611.9316 3.48912 606.3516 3.48912 
+L 182.0484 3.48912 
+Q 176.4684 3.48912 176.4684 9.03312 
+L 176.4684 303.08688 
+Q 176.4684 308.63088 182.0484 308.63088 
+z
+" clip-path="url(#p71270812b8)" style="fill: #ffffff; opacity: 0.45; stroke: #333333; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 190.9764 97.95888 
+L 307.2636 97.95888 
+Q 310.6116 97.95888 310.6116 94.63248 
+L 310.6116 34.53552 
+Q 310.6116 31.20912 307.2636 31.20912 
+L 190.9764 31.20912 
+Q 187.6284 31.20912 187.6284 34.53552 
+L 187.6284 94.63248 
+Q 187.6284 97.95888 190.9764 97.95888 
+z
+" clip-path="url(#p71270812b8)" style="fill: #d6e6f7; stroke: #2f6db0; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 336.0564 97.95888 
+L 452.3436 97.95888 
+Q 455.6916 97.95888 455.6916 94.63248 
+L 455.6916 34.53552 
+Q 455.6916 31.20912 452.3436 31.20912 
+L 336.0564 31.20912 
+Q 332.7084 31.20912 332.7084 34.53552 
+L 332.7084 94.63248 
+Q 332.7084 97.95888 336.0564 97.95888 
+z
+" clip-path="url(#p71270812b8)" style="fill: #d2f1ef; stroke: #1f8a83; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 481.1364 97.95888 
+L 597.4236 97.95888 
+Q 600.7716 97.95888 600.7716 94.63248 
+L 600.7716 34.53552 
+Q 600.7716 31.20912 597.4236 31.20912 
+L 481.1364 31.20912 
+Q 477.7884 31.20912 477.7884 34.53552 
+L 477.7884 94.63248 
+Q 477.7884 97.95888 481.1364 97.95888 
+z
+" clip-path="url(#p71270812b8)" style="fill: #d2f1ef; stroke: #1f8a83; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 190.9764 214.38288 
+L 597.4236 214.38288 
+Q 600.7716 214.38288 600.7716 211.05648 
+L 600.7716 150.95952 
+Q 600.7716 147.63312 597.4236 147.63312 
+L 190.9764 147.63312 
+Q 187.6284 147.63312 187.6284 150.95952 
+L 187.6284 211.05648 
+Q 187.6284 214.38288 190.9764 214.38288 
+z
+" clip-path="url(#p71270812b8)" style="fill: #fff6c9; stroke: #a08800; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 249.12 101.414082 
+Q 249.12 122.795191 249.12 144.1763 
+" clip-path="url(#p71270812b8)" style="fill: none; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+    <path d="M 246.92 105.814082 
+L 249.12 101.414082 
+L 251.32 105.814082 
+z
+" clip-path="url(#p71270812b8)" style="fill: #333333; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+    <path d="M 251.32 139.7763 
+L 249.12 144.1763 
+L 246.92 139.7763 
+z
+" clip-path="url(#p71270812b8)" style="fill: #333333; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 394.2 101.414082 
+Q 394.2 122.795191 394.2 144.1763 
+" clip-path="url(#p71270812b8)" style="fill: none; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+    <path d="M 392 105.814082 
+L 394.2 101.414082 
+L 396.4 105.814082 
+z
+" clip-path="url(#p71270812b8)" style="fill: #333333; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+    <path d="M 396.4 139.7763 
+L 394.2 144.1763 
+L 392 139.7763 
+z
+" clip-path="url(#p71270812b8)" style="fill: #333333; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 539.28 101.414082 
+Q 539.28 122.795191 539.28 144.1763 
+" clip-path="url(#p71270812b8)" style="fill: none; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+    <path d="M 537.08 105.814082 
+L 539.28 101.414082 
+L 541.48 105.814082 
+z
+" clip-path="url(#p71270812b8)" style="fill: #333333; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+    <path d="M 541.48 139.7763 
+L 539.28 144.1763 
+L 537.08 139.7763 
+z
+" clip-path="url(#p71270812b8)" style="fill: #333333; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 190.9764 297.54288 
+L 379.8036 297.54288 
+Q 383.1516 297.54288 383.1516 294.21648 
+L 383.1516 239.66352 
+Q 383.1516 236.33712 379.8036 236.33712 
+L 190.9764 236.33712 
+Q 187.6284 236.33712 187.6284 239.66352 
+L 187.6284 294.21648 
+Q 187.6284 297.54288 190.9764 297.54288 
+z
+" clip-path="url(#p71270812b8)" style="fill: #e8dcf4; stroke: #6b3fa0; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 408.5964 297.54288 
+L 597.4236 297.54288 
+Q 600.7716 297.54288 600.7716 294.21648 
+L 600.7716 239.66352 
+Q 600.7716 236.33712 597.4236 236.33712 
+L 408.5964 236.33712 
+Q 405.2484 236.33712 405.2484 239.66352 
+L 405.2484 294.21648 
+Q 405.2484 297.54288 408.5964 297.54288 
+z
+" clip-path="url(#p71270812b8)" style="fill: #d6e6f7; stroke: #2f6db0; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 155.923374 43.509762 
+Q 170.998598 53.495071 184.768872 62.616027 
+" clip-path="url(#p71270812b8)" style="fill: none; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+    <path d="M 182.315459 58.352137 
+L 184.768872 62.616027 
+L 179.885712 62.020424 
+z
+" clip-path="url(#p71270812b8)" style="fill: #333333; stroke: #333333; stroke-width: 1.4; stroke-linecap: round"/>
+   </g>
+   <g id="patch_14">
+    <path d="M 12.4164 214.38288 
+L 151.0236 214.38288 
+Q 154.3716 214.38288 154.3716 211.05648 
+L 154.3716 106.60752 
+Q 154.3716 103.28112 151.0236 103.28112 
+L 12.4164 103.28112 
+Q 9.0684 103.28112 9.0684 106.60752 
+L 9.0684 211.05648 
+Q 9.0684 214.38288 12.4164 214.38288 
+z
+" clip-path="url(#p71270812b8)" style="fill: #ffffff; stroke: #333333; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_1">
+    <path d="M 81.72 103.392 
+L 81.72 70.128 
+" clip-path="url(#p71270812b8)" style="fill: none; stroke-dasharray: 1,1.65; stroke-dashoffset: 0; stroke: #333333"/>
+   </g>
+   <g id="text_1">
+    <text style="font-size: 7.4px; font-family: 'DejaVu Sans'" transform="translate(52.248344 30.574938)">lft3-pipeline run</text>
+    <text style="font-size: 7.4px; font-family: 'DejaVu Sans'" transform="translate(55.669109 39.824938)">(Python, host)</text>
+    <text style="font-size: 7.4px; font-family: 'DejaVu Sans'" transform="translate(27.971719 49.074938)">plans + launches containers,</text>
+    <text style="font-size: 7.4px; font-family: 'DejaVu Sans'" transform="translate(38.546203 58.324938)">status, metrics, NIC log</text>
+   </g>
+   <g id="text_2">
+    <text style="font-weight: 700; font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #333333" x="181.044" y="13.764994" transform="rotate(-0 181.044 13.764994)">containers (image lft3-runtime), all --ipc=host, one set per link</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(198.163828 53.390562)">lft3-&lt;board&gt;-&lt;link&gt;-capture</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(212.174766 62.043219)">--net host, NET_RAW,</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(204.041094 70.793219)">IPC_LOCK, /dev/infiniband</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(215.542422 79.640562)">cpuset = link cores</text>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(365.91125 53.188766)">…-spectrometer</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(356.28625 62.140562)">as you (uid + groups)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(376.086953 71.366891)">--net none</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(355.916563 79.543219)">cpuset = reader_cpus</text>
+   </g>
+   <g id="text_5">
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(524.446016 53.390562)">…-dump</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(507.430547 61.938766)">as you, --net none</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(515.031016 70.890562)">trigger socket</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'" transform="translate(498.145703 79.640562)">/dev/shm/...-dump.sock</text>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 7.4px; font-family: 'DejaVu Sans'" transform="translate(219.179016 173.799938)">/dev/shm (host IPC namespace):  lft3-&lt;stream&gt; (control block)  ·  lft3-&lt;stream&gt;.sock (ring fd)</text>
+    <text style="font-size: 7.4px; font-family: 'DejaVu Sans'" transform="translate(324.089047 183.049938)">·  lft3-&lt;stream&gt;-dump.sock (triggers)</text>
+    <text style="font-size: 7.4px; font-family: 'DejaVu Sans'" transform="translate(284.702547 192.299938)">+ GPU: the ring's VMM allocation, imported by each reader</text>
+   </g>
+   <g id="text_7">
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(216.383063 264.326625)">logs: &lt;run_dir&gt;/&lt;stream&gt;-&lt;role&gt;.log</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(220.2885 273.42675)">status.jsonl, nic-&lt;link&gt;.csv, plan.txt</text>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(442.382625 259.92675)">lft3-pipeline status / trigger / stop</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(442.276875 268.92675)">lft3.ring (Python): reads /dev/shm</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(452.815313 277.92675)">Prometheus (--metrics-port)</text>
+   </g>
+   <g id="text_9">
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(42.357375 124.81875)">start order: capture →</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(50.281313 133.81875)">wait for its ring →</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(68.04225 143.51625)">readers</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(81.72 149.832)"/>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(47.229188 160.81875)">stop order: readers</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(42.051375 169.81875)">(close files) → capture</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(81.72 176.832)"/>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(46.640813 188.148938)">Ctrl-C, --duration or</text>
+    <text style="font-size: 7.2px; font-family: 'DejaVu Sans'" transform="translate(51.312938 196.81875)">lft3-pipeline stop</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p71270812b8">
+   <rect x="3.6" y="3.6" width="613.8" height="321.552"/>
+  </clipPath>
+ </defs>
+</svg>

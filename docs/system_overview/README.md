@@ -3,11 +3,11 @@
 `lft3_system_overview.pdf`: how the whole system works (board, packets, host, real-time runtime, products,
 viewer, search, performance, design decisions), with diagrams.
 
-Regenerate after changes (needs reportlab + matplotlib + pillow, e.g. in a scratch venv):
+Regenerate after changes (needs reportlab, svglib and matplotlib, e.g. in a scratch venv):
 
 ```bash
 cd docs/system_overview
-python figures.py figures      # diagrams and charts → figures/*.png
+python figures.py figures      # diagrams and charts → figures/*.svg (vector, text kept as text)
 python build.py                # → lft3_system_overview.pdf
 ```
 

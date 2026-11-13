@@ -1,6 +1,6 @@
 """Build docs/system_overview/lft3_system_overview.pdf: how the LFT3-Earth system works.
 
-    python figures.py figures && python build.py            (needs reportlab + matplotlib)
+    python figures.py figures && python build.py            (needs reportlab, svglib, matplotlib)
 
 The text is in this file; the diagrams are drawn by figures.py. Numbers are the measured values recorded in
 docs/runtime.md (2026-11-13); update both together.
@@ -20,6 +20,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepTogether, NextPageTemplate, PageBreak,
                                 PageTemplate, Paragraph, Spacer, Table, TableStyle)
 from reportlab.platypus.tableofcontents import TableOfContents
+from svglib import fonts as svgfonts
+from svglib.svglib import svg2rlg
 
 HERE = Path(__file__).resolve().parent
 FIG = HERE / "figures"
@@ -42,6 +44,20 @@ for name, file in FONTS.items():
         if (d / file).exists():
             pdfmetrics.registerFont(TTFont(name, str(d / file)))
             break
+# Map the font names in the SVG figures (matplotlib writes 'DejaVu Sans' / 'DejaVu Sans Mono', bold as weight 700)
+# to the embedded TTFs. svglib needs the file path to accept a mapping.
+def _font_path(file):
+    for d in FONT_DIRS:
+        if (d / file).exists():
+            return str(d / file)
+    return None
+
+
+for fam, weight, style, rl in (("DejaVu Sans", "normal", "normal", "Sans"), ("DejaVu Sans", "bold", "normal", "Sans-Bold"),
+                               ("DejaVu Sans", "700", "normal", "Sans-Bold"),
+                               ("DejaVu Sans", "normal", "italic", "Sans-Oblique"),
+                               ("DejaVu Sans Mono", "normal", "normal", "Mono")):
+    svgfonts.register_font(fam, _font_path(FONTS[rl]), weight=weight, style=style, rlgFontName=rl)
 pdfmetrics.registerFontFamily("Serif", normal="Serif", bold="Serif-Bold", italic="Serif-Italic", boldItalic="Serif-Bold")
 pdfmetrics.registerFontFamily("Sans", normal="Sans", bold="Sans-Bold", italic="Sans-Oblique", boldItalic="Sans-Bold")
 
@@ -179,14 +195,19 @@ def _take_headings():
     return heads
 
 
+def figure_drawing(name, width):
+    """An SVG figure as a vector ReportLab drawing scaled to `width` points."""
+    d = svg2rlg(str(FIG / f"{name}.svg"))
+    k = width / d.width
+    d.width, d.height = d.width * k, d.height * k
+    d.scale(k, k)
+    d.hAlign = "CENTER"
+    return d
+
+
 def FIGURE(name, caption, width=None):
     _fig[0] += 1
-    path = FIG / f"{name}.png"
-    from PIL import Image as PILImage  # noqa: N814 (only for the aspect ratio)
-    with PILImage.open(path) as im:
-        w, h = im.size
-    width = width or (A4[0] - 4.2 * cm)
-    img = Image(str(path), width=width, height=width * h / w)
+    img = figure_drawing(name, width or (A4[0] - 4.2 * cm))
     story.append(KeepTogether(_take_headings() + [img, Paragraph(f"<b>Figure {_fig[0]}.</b> {caption}", S["caption"])]))
 
 
@@ -226,12 +247,7 @@ def cover():
                            'products, viewer and search</font>',
                            ParagraphStyle("cs", fontName="Sans", fontSize=12.5, leading=17, textColor=colors.white)))
     story.append(Spacer(1, 2.6 * cm))
-    img = FIG / "f01_system.png"
-    from PIL import Image as PILImage  # noqa: N814
-    with PILImage.open(img) as im:
-        w, h = im.size
-    width = A4[0] - 4.2 * cm
-    story.append(Image(str(img), width=width, height=width * h / w))
+    story.append(figure_drawing("f01_system", A4[0] - 4.2 * cm))
     story.append(Spacer(1, 0.8 * cm))
     meta = [["Scope", "One RFSoC 4x2 board (rfsoc0) streaming to one NVIDIA DGX Spark; the design scales to "
                       "5 boards × 2 links"],
