@@ -710,6 +710,25 @@ def content():
     P("FBH5 files open with blimpy, turboSETI and hyperseti as well as the project's own tools. GUPPI RAW opens with "
       "rawspec and blimpy. Files rotate every 3600 spectra, and " + mono("/lft3_timestamp") + " continues exactly "
       "across rotations, so tools can chain them into one run.")
+    H2("What the spectra look like")
+    P("The figure below shows real output: the first hour of the 2-hour soak test of 13 November 2026, beam 0, with "
+      "no test signal applied. Power is in dB relative to the median channel, which is the receiver's own "
+      "noise. These are the same views " + mono("lft3-view") + " offers interactively (§7).")
+    FIGURE("c5_spectra", "Fine spectra from the soak test. (a) Full band, 5-minute average with the coarse-channel "
+                         "response divided out; each plotted point covers 256 fine channels. (b) The spur at 2125 MHz "
+                         "at full resolution, without that correction. (c) Wi-Fi channel 1 over one hour, 10-second "
+                         "rows.", width=15.5 * cm)
+    B("<b>Board spurs</b> (a). The narrow lines at 1750, 1875, 2000, 2125 and 2250 MHz (+10 to +36 dB) are exact "
+      "multiples of 125 MHz, the FPGA's internal clock leaking into the ADCs. Because they land exactly where expected, "
+      "they confirm the frequency axis and its sign. They belong in the static RFI mask.",
+      "<b>Mean and peak</b> (a). One plotted point covers 256 fine channels, so a one-channel spur is diluted in the "
+      "mean (dark) but kept in the peak (light). The viewer can show either reduction.",
+      "<b>Coarse-channel ripple</b> (b). Without the correction, the noise floor dips by about 3 dB every 152.6 kHz: "
+      "the edges of the board's PFB channels. The fine channels show the coarse channels' shape, and "
+      + mono("flatten") + " divides it out. The spur occupies one 1.19 kHz channel. The small regular features near "
+      "each coarse channel's centre repeat in every channel and are not yet explained.",
+      "<b>RFI next to the board</b> (c). The Spark's own Wi-Fi (channel 1, 2401–2423 MHz) switches on and off; the "
+      "dark vertical line at 2412 MHz is the unused centre subcarrier of the Wi-Fi (OFDM) signal.")
 
     # ------------------------------------------------------------------------------------------------ 7
     H1("The viewer")

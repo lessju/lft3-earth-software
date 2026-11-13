@@ -537,9 +537,59 @@ def chart_memory(out):
     save(f, out, "c4_memory")
 
 
+def chart_spectra(out):
+    """Real spectra from the soak test (data extracted by spectrum_data.py into data/soak_spectrum.npz)."""
+    import numpy as np
+    d = np.load(Path(__file__).parent / "data" / "soak_spectrum.npz")
+    ref = np.median(d["full_mean"])
+    db = lambda x: 10 * np.log10(x / ref)  # noqa: E731
+    f = plt.figure(figsize=(7.2, 5.0))
+    gs = f.add_gridspec(2, 2, height_ratios=[1, 1.05], hspace=0.42, wspace=0.28)
+
+    ax = f.add_subplot(gs[0, :])
+    ax.plot(d["full_f"], db(d["full_max"]), color="#9cc79a", lw=0.6, label="peak in each pixel")
+    ax.plot(d["full_f"], db(d["full_mean"]), color="#2e8b3a", lw=0.8, label="mean")
+    for k in range(13, 20):
+        ax.axvline(125 * k, color="#e3a06b", lw=0.5, ls=(0, (1, 2)), zorder=0,
+                   label="multiples of 125 MHz" if k == 13 else None)
+    ax.axvspan(2401, 2423, color="#b03a2e", alpha=0.12, lw=0)
+    ax.text(2412, 41, "Wi-Fi", ha="center", fontsize=7.5, color="#b03a2e")
+    ax.set_xlim(d["full_f"][0], d["full_f"][-1])
+    ax.set_ylim(-4, 46)
+    ax.set_xlabel("frequency (MHz)")
+    ax.set_ylabel("dB")
+    ax.legend(fontsize=7, frameon=False, loc="upper right", bbox_to_anchor=(1.0, 0.86))
+    ax.set_title("(a) full band, beam 0, 5-minute average", fontsize=8.5, loc="left")
+
+    az = f.add_subplot(gs[1, 0])
+    zf = (d["zoom_f"] - 2125.0) * 1e3
+    az.plot(zf, db(d["zoom_p"]), color="#2e8b3a", lw=0.7)
+    az.set_xlim(zf[0], zf[-1])
+    az.set_xlabel("offset from 2125 MHz (kHz)")
+    az.set_ylabel("dB")
+    az.set_title("(b) one spur at 1.19 kHz resolution", fontsize=8.5, loc="left")
+
+    aw = f.add_subplot(gs[1, 1])
+    wf = 10 * np.log10(d["wf"] / np.median(d["wf"]))
+    t_min = wf.shape[0] * float(d["wf_row_s"]) / 60
+    im = aw.imshow(wf, aspect="auto", origin="lower", cmap="viridis", vmin=np.percentile(wf, 1),
+                   vmax=np.percentile(wf, 99.5), extent=(d["wf_f"][0], d["wf_f"][-1], 0, t_min),
+                   interpolation="nearest")
+    aw.set_xlabel("frequency (MHz)")
+    aw.set_ylabel("time (min)")
+    aw.set_title("(c) Wi-Fi channel 1, one hour", fontsize=8.5, loc="left")
+    cb = f.colorbar(im, ax=aw, pad=0.02)
+    cb.set_label("dB", fontsize=7.5)
+    cb.ax.tick_params(labelsize=7)
+    for a in (ax, az, aw):
+        a.tick_params(labelsize=7.5)
+        a.spines[["top", "right"]].set_visible(False)
+    save(f, out, "c5_spectra")
+
+
 ALL = [system_overview, signal_chain, packet_layout, freq_map, spark_hw, data_movement, packet_lifetime, assembler,
        scatter, ring, finespec, warp_fft, dump, processes, bringup, viewer, chart_kernels, chart_capacity,
-       chart_rawspec, chart_memory]
+       chart_rawspec, chart_memory, chart_spectra]
 
 if __name__ == "__main__":
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "figures")
