@@ -1,0 +1,9 @@
+[wrap-git]
+directory = filterbankc99
+url = https://github.com/MydonSolutions/filterbankc99.git
+revision = h5_read
+depth = 1
+diff_files = filterbankc99/hdf5_dep.diff
+
+[provide]
+filterbankc99 = lib_filterbankc99_dep

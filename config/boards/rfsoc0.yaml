@@ -1,0 +1,56 @@
+# RFSoC 4x2 board "rfsoc0" (UHF test board in the lab). Single source of truth for how the board is
+# brought up and what the host expects from it. Read by `lft3-board` (src/lft3/config.py).
+name: rfsoc0
+host: 192.168.2.100                 # katcp / casperfpga control address (1 GbE management network)
+board_id: 0                         # packetizer fid, 0..7; also checked by the receiver
+bitstream: /opt/lft3arth/repos/lft3-earth-main/designs/spectrometer_8way/spectrometer_8way_4x/outputs/spectrometer_8way_4x.fpg
+
+clocks:                             # clock files already on the board (copy new ones with upload=True)
+  lmk: rfsoc4x2_lmk_PL_125M_SYSREF_5M_LMXREF_250M.txt
+  lmx: rfsoc4x2_lmx_inputref_250M_outputref_250M.txt
+
+adc:
+  map: [[0, 0], [0, 1], [2, 0], [2, 1]]   # (tile, block) of ADC inputs 0..3
+  tile_mask: 0x5
+  nco_mhz: -2031.25                 # exact NCO; the packet header carries round() of this
+  # Input -> beam/polarisation. ASSUMED (ADC_MAP order), not yet verified with a signal.
+  inputs:
+    - {beam: 0, pol: X}
+    - {beam: 0, pol: Y}
+    - {beam: 1, pol: X}
+    - {beam: 1, pol: Y}
+
+requantisation:
+  adc_lsb: 6                        # f_engineN_adc_lsb_select (ADC/DDR path)
+  ch_lsb: 0                         # f_engineN_ch_lsb_select (channel stream; sync after changing)
+
+packetizer:
+  packet_mask: 0x3f                 # which of the 6 bindex packets are sent
+  ddr_size: 67108863                # last 512-bit DDR word address (2^26 - 1 = 4 GiB)
+  ddr_read_delay: 33554432          # DDR words written after a trigger before readout
+
+network:
+  source_ip: 10.17.16.60            # informational (gmac register)
+  destination_ip: 10.17.16.10       # compiled into the firmware
+  destination_mac: 4c:bb:47:2b:97:28  # enp1s0f0np0 on the DGX Spark; written to the 100GbE ARP table
+  channel_port: 60000
+  adc_port: 40000
+  expected_packet_rate: 915527      # channel packets/s with packet_mask 0x3f
+
+receiver:                           # the host side of this board's stream (DGX Spark)
+  interface: '0000:01:00.0'         # ConnectX function (PCI) receiving the stream = enp1s0f0np0
+  master_core: 5                    # Cortex-X925 cores 5-9, 15-19
+  worker_core: 6
+  processing_core: 7
+
+timing:
+  # pps: none | temporary | reference. Only a "reference" PPS (GPS-disciplined, properly distributed)
+  # makes the sample-clock accuracy check meaningful; otherwise it is reported as INFO.
+  pps: temporary                    # 2026-11-12: a temporary PPS, not fixed properly yet
+  # FPGA clock cycles per PPS for the firmware's PPS drift check (design default 208333332 is wrong
+  # for this 156.25 MHz design). Written by `lft3-board start`.
+  expected_clk_period: 156250000
+
+sensors:                            # rail/temperature sensors live in the board's sysfs: read over SSH
+  ssh_user: casper
+  enabled: false                    # needs an SSH key for ssh_user@host (BatchMode)

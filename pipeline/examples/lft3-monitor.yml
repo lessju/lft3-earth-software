@@ -1,0 +1,320 @@
+---
+version: 2
+title: LFT3 Spectrometer + Monitor
+summary: >-
+  RFSoC 4x2 channel stream -> fused 128-point fine FFT (1.19 kHz channels) + Stokes I + ~1 s integration
+  -> FBH5 files, one per beam. Needs root (DAQIRI raw NIC access). No Stelline blocks required.
+graph:
+  # [2 beams * 8 segments, 6144 coarse channels, 128 samples, 2 pols] CI8, one block per 1024 spectra (6.7 ms)
+  - name: receiver
+    module: lft3_receiver
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      source: network
+      interfaceAddress: '0000:01:00.0'
+      sourceAddress: 10.17.16.60
+      udpPort: 60000
+      boardId: 0
+      masterCore: 5
+      workerCore: 6
+      processingCore: 7
+      packetsPerBurst: 1024
+      maxConcurrentBursts: 64
+      channelStart: 0
+      channelCount: 6144
+      fftLength: 128
+      segments: 8
+      inputBeam: '[0, 0, 1, 1]'
+      inputPolarization: '[0, 1, 0, 1]'
+      dataType: CI8
+      zeroFill: true
+      maxOpenBlocks: 4
+      maxBlockLag: 2
+      outputPoolSize: 24   # 160 ms of slack while the display blocks start up (50 MB per CI8 block)
+  # FFT each coarse channel's 128 samples, |X|^2+|Y|^2, sum 8 segments x 149 blocks
+  # = 149 * 1024 spectra * 6.5536 us = 0.99975 s -> [2, 786432, 1, 1] F32
+    meta:
+      node:
+        x: 20
+        y: 20
+        width: 280
+        height: 0
+        configCollapsed: true
+  - name: finespec
+    module: lft3_finespec
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      beams: 2
+      integrationBlocks: 149
+    input:
+      buffer: '${graph.receiver.output.output}'
+    meta:
+      node:
+        x: 340
+        y: 20
+        width: 220
+        height: 0
+        configCollapsed: true
+  - name: writer
+    module: lft3_fbh5_writer
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      outputDirectory: /opt/lft3arth/data/spectra
+      filePrefix: lft3
+      recording: true
+      ncoMHz: -2031.25
+      syncTimeUnix: 0
+      spectraPerFile: 3600
+      sourceName: LFT3
+    input:
+      input: '${graph.finespec.output.buffer}'
+
+  # ---------------- diagnostic display branch (does not affect the files above) ----------------
+  # Quick look at the board's own channels: lft3_finespec in coarse mode (no FFT) sums |X|^2+|Y|^2 over
+  # ~0.1 s (15 blocks) per coarse channel, 6 coarse channels per point (binsPerOutput: 6) -> 1024 points
+  # per beam (0.916 MHz each), copied to the CPU and shown as a lineplot + waterfall per beam.
+  # View it with Remote streaming (pipeline/scripts/run.sh --remote <this file>) in a browser.
+    meta:
+      node:
+        x: 600
+        y: 20
+        width: 260
+        height: 0
+        configCollapsed: true
+  - name: quicklook
+    module: lft3_finespec
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      mode: coarse
+      beams: 2
+      integrationBlocks: 15
+      binsPerOutput: 6
+    input:
+      buffer: '${graph.receiver.output.output}'
+    meta:
+      node:
+        x: 340
+        y: 420
+        width: 220
+        height: 0
+        configCollapsed: true
+  - name: beam0_slice
+    module: slice
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      slice: '[0, :, 0, 0]'
+      contiguous: true
+    input:
+      buffer: '${graph.quicklook.output.buffer}'
+    meta:
+      node:
+        x: 600
+        y: 420
+        width: 160
+        height: 0
+        configCollapsed: true
+  - name: beam0_host
+    module: duplicate
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      hostAccessible: true
+      outputDevice: cpu
+    input:
+      buffer: '${graph.beam0_slice.output.buffer}'
+  # 20*log10(power) (no normalisation: the sliced tensor has no time axis), a doubled dB scale:
+  # 10 dB of power shows as 20. Live floor ~152, grouped board spurs ~165-174. Adjust min/max live in the UI.
+    meta:
+      node:
+        x: 800
+        y: 420
+        width: 160
+        height: 0
+        configCollapsed: true
+  - name: beam0_db
+    module: amplitude
+    device: cpu
+    runtime: native
+    provider: generic
+    input:
+      signal: '${graph.beam0_host.output.buffer}'
+    meta:
+      node:
+        x: 1000
+        y: 420
+        width: 140
+        height: 0
+        configCollapsed: true
+  - name: beam0_range
+    module: range
+    device: cpu
+    runtime: native
+    provider: generic
+    config:
+      min: 145
+      max: 180
+    input:
+      signal: '${graph.beam0_db.output.signal}'
+    meta:
+      node:
+        x: 1180
+        y: 420
+        width: 160
+        height: 0
+        configCollapsed: true
+  - name: beam0_lineplot
+    module: lineplot
+    device: cpu
+    runtime: native
+    provider: generic
+    config:
+      averaging: 1
+      maxHold: false
+      fill: true
+      xLabel: Band fraction (0 = 1562.5 MHz, 0.5 = NCO 2031.25 MHz, 1 = 2500 MHz)
+      yLabel: Beam 0 power (2x dB)
+    input:
+      signal: '${graph.beam0_range.output.signal}'
+    meta:
+      node:
+        x: 1380
+        y: 420
+        width: 900
+        height: 200
+        configCollapsed: true
+  - name: beam0_waterfall
+    module: waterfall
+    device: cpu
+    runtime: native
+    provider: generic
+    config:
+      height: 512
+      averaging: 1
+      xLabel: Band fraction (0 = 1562.5 MHz, 0.5 = NCO 2031.25 MHz, 1 = 2500 MHz)
+      yLabel: Time (0.1 s per line)
+    input:
+      signal: '${graph.beam0_range.output.signal}'
+    meta:
+      node:
+        x: 1380
+        y: 660
+        width: 900
+        height: 220
+        configCollapsed: true
+  - name: beam1_slice
+    module: slice
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      slice: '[1, :, 0, 0]'
+      contiguous: true
+    input:
+      buffer: '${graph.quicklook.output.buffer}'
+    meta:
+      node:
+        x: 600
+        y: 900
+        width: 160
+        height: 0
+        configCollapsed: true
+  - name: beam1_host
+    module: duplicate
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      hostAccessible: true
+      outputDevice: cpu
+    input:
+      buffer: '${graph.beam1_slice.output.buffer}'
+  # 20*log10(power) (no normalisation: the sliced tensor has no time axis), a doubled dB scale:
+  # 10 dB of power shows as 20. Live floor ~152, grouped board spurs ~165-174. Adjust min/max live in the UI.
+    meta:
+      node:
+        x: 800
+        y: 900
+        width: 160
+        height: 0
+        configCollapsed: true
+  - name: beam1_db
+    module: amplitude
+    device: cpu
+    runtime: native
+    provider: generic
+    input:
+      signal: '${graph.beam1_host.output.buffer}'
+    meta:
+      node:
+        x: 1000
+        y: 900
+        width: 140
+        height: 0
+        configCollapsed: true
+  - name: beam1_range
+    module: range
+    device: cpu
+    runtime: native
+    provider: generic
+    config:
+      min: 145
+      max: 180
+    input:
+      signal: '${graph.beam1_db.output.signal}'
+    meta:
+      node:
+        x: 1180
+        y: 900
+        width: 160
+        height: 0
+        configCollapsed: true
+  - name: beam1_lineplot
+    module: lineplot
+    device: cpu
+    runtime: native
+    provider: generic
+    config:
+      averaging: 1
+      maxHold: false
+      fill: true
+      xLabel: Band fraction (0 = 1562.5 MHz, 0.5 = NCO 2031.25 MHz, 1 = 2500 MHz)
+      yLabel: Beam 1 power (2x dB)
+    input:
+      signal: '${graph.beam1_range.output.signal}'
+    meta:
+      node:
+        x: 1380
+        y: 900
+        width: 900
+        height: 200
+        configCollapsed: true
+  - name: beam1_waterfall
+    module: waterfall
+    device: cpu
+    runtime: native
+    provider: generic
+    config:
+      height: 512
+      averaging: 1
+      xLabel: Band fraction (0 = 1562.5 MHz, 0.5 = NCO 2031.25 MHz, 1 = 2500 MHz)
+      yLabel: Time (0.1 s per line)
+    input:
+      signal: '${graph.beam1_range.output.signal}'
+    meta:
+      node:
+        x: 1380
+        y: 1140
+        width: 900
+        height: 220
+        configCollapsed: true

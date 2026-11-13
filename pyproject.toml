@@ -1,13 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "lft3"
-version = "0.1.0"
-description = "LFT3-Earth RFSoC packet tools and reference spectrometers"
-requires-python = ">=3.9"
-dependencies = ["numpy"]
+version = "0.2.0"
+description = "LFT3-Earth host software: RFSoC packet tools, reference DSP, board monitoring & control"
+readme = "README.md"
+requires-python = ">=3.8"          # the casperfpga environment is Python 3.8
+dependencies = ["numpy", "pyyaml", "h5py", "matplotlib"]   # h5py<3.12 / matplotlib<3.8 on Python 3.8
+
 [project.optional-dependencies]
+# casperfpga is installed from source (/opt/lft3arth/repos/casperfpga), not from PyPI.
 gpu = ["cupy"]
-test = ["pytest"]
+dev = ["pytest>=7", "ruff"]
+
+[project.scripts]
+lft3-board = "lft3.cli.board:main"
+lft3-pcap = "lft3.cli.pcap:main"
+lft3-pipeline = "lft3.cli.pipeline:main"
+lft3-plot = "lft3.cli.plot:main"
+
 [tool.setuptools.packages.find]
-where = ["python"]
+where = ["src"]
+
 [tool.pytest.ini_options]
-testpaths = ["python/tests"]
+testpaths = ["tests"]
+markers = [
+    "hardware: needs a live RFSoC board (deselected by default; run with -m hardware)",
+]
+addopts = "-m 'not hardware'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E701", "E702", "E731"]   # packets.py uses compact one-liners

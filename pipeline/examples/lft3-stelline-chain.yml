@@ -1,0 +1,85 @@
+---
+version: 2
+title: LFT3 Spectrometer (Stelline blocks)
+summary: >-
+  REFERENCE ONLY: the same product built from Stelline's separate channelizer/detector/integrator blocks.
+  At full band it sustains only ~0.6x real time on DGX Spark (memory-bandwidth bound); use
+  lft3-spectrometer.yml (fused lft3_finespec) instead, or select <= ~3000 channels.
+  RFSoC 4x2 channel stream -> 128-point fine FFT (1.19 kHz channels) -> Stokes I -> ~1 s integrations ->
+  FBH5 files, one per beam. Needs the Stelline plugin (channelizer, detector, integrator) and root.
+graph:
+  # [2 beams * 8 segments, 6144 coarse channels, 128 samples, 2 pols] CF32, one block per 1024 spectra (6.7 ms)
+  - name: receiver
+    module: lft3_receiver
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      interfaceAddress: '0000:01:00.0'
+      sourceAddress: 10.17.16.60
+      udpPort: 60000
+      boardId: 0
+      masterCore: 5
+      workerCore: 6
+      processingCore: 7
+      packetsPerBurst: 1024
+      maxConcurrentBursts: 64
+      channelStart: 0
+      channelCount: 6144
+      fftLength: 128
+      segments: 8
+      inputBeam: '[0, 0, 1, 1]'
+      inputPolarization: '[0, 1, 0, 1]'
+      dataType: CF32
+      fftShiftSign: false
+      zeroFill: true
+      maxOpenBlocks: 4
+      maxBlockLag: 2
+      outputPoolSize: 8
+  # 128-point FFT along the sample axis -> [16, 786432, 1, 2], fine bins centred, coarse-channel major
+  - name: channelizer
+    module: channelizer
+    device: cuda
+    runtime: native
+    provider: generic
+    input:
+      buffer: '${graph.receiver.output.output}'
+  # |X|^2 + |Y|^2 (Stokes I) -> [16, 786432, 1, 1] F32
+  - name: detector
+    module: detector
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      integrationRate: 1
+      numberOfOutputPolarizations: 1
+    input:
+      buffer: '${graph.channelizer.output.buffer}'
+  # Sum the 8 segments of each beam (axis 0) and 149 consecutive blocks:
+  # 149 * 1024 spectra * 6.5536 us = 0.99975 s -> [2, 786432, 1, 1]
+  - name: integrator
+    module: integrator
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      axis: 0
+      size: 8
+      rate: 149
+    input:
+      buffer: '${graph.detector.output.buffer}'
+  - name: writer
+    module: lft3_fbh5_writer
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      outputDirectory: /opt/lft3arth/data/spectra
+      filePrefix: lft3
+      recording: true
+      ncoMHz: -2031.25
+      syncTimeUnix: 0
+      spectraPerFile: 3600
+      sourceName: LFT3
+    input:
+      input: '${graph.integrator.output.buffer}'

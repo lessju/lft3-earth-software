@@ -1,0 +1,90 @@
+---
+version: 2
+title: LFT3 Spectrometer (synthetic source)
+summary: >-
+  Synthetic LFT3 packets (noise + tone in channel 4000, input 1, +15.5 kHz, 0.1% packets dropped) through
+  the real pipeline. No root or hardware needed. Otherwise identical to lft3-spectrometer.yml:
+  RFSoC 4x2 channel stream -> fused 128-point fine FFT (1.19 kHz channels) + Stokes I + ~1 s integration
+  -> FBH5 files, one per beam. Needs root (DAQIRI raw NIC access). No Stelline blocks required.
+graph:
+  # [2 beams * 8 segments, 6144 coarse channels, 128 samples, 2 pols] CI8, one block per 1024 spectra (6.7 ms)
+  - name: receiver
+    module: lft3_receiver
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      source: synthetic
+      realTime: true
+      syntheticToneChannel: 4000
+      syntheticToneInput: 1
+      syntheticToneFrequency: 0.1015625
+      syntheticDropFraction: 0.001
+      interfaceAddress: '0000:01:00.0'
+      sourceAddress: 10.17.16.60
+      udpPort: 60000
+      boardId: 0
+      masterCore: 5
+      workerCore: 6
+      processingCore: 7
+      packetsPerBurst: 1024
+      maxConcurrentBursts: 64
+      channelStart: 0
+      channelCount: 6144
+      fftLength: 128
+      segments: 8
+      inputBeam: '[0, 0, 1, 1]'
+      inputPolarization: '[0, 1, 0, 1]'
+      dataType: CI8
+      zeroFill: true
+      maxOpenBlocks: 4
+      maxBlockLag: 2
+      outputPoolSize: 8
+  # FFT each coarse channel's 128 samples, |X|^2+|Y|^2, sum 8 segments x 149 blocks
+  # synthetic: 15 blocks = 0.1007 s -> [2, 786432, 1, 1] F32
+    meta:
+      node:
+        x: 20
+        y: 20
+        width: 280
+        height: 0
+        configCollapsed: true
+  - name: finespec
+    module: lft3_finespec
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      beams: 2
+      integrationBlocks: 15
+    input:
+      buffer: '${graph.receiver.output.output}'
+    meta:
+      node:
+        x: 340
+        y: 20
+        width: 220
+        height: 0
+        configCollapsed: true
+  - name: writer
+    module: lft3_fbh5_writer
+    device: cuda
+    runtime: native
+    provider: generic
+    config:
+      outputDirectory: /opt/lft3arth/data/synthetic
+      filePrefix: lft3synth
+      recording: true
+      ncoMHz: -2031.25
+      syncTimeUnix: 0
+      spectraPerFile: 0
+      sourceName: LFT3
+    input:
+      input: '${graph.finespec.output.buffer}'
+    meta:
+      node:
+        x: 600
+        y: 20
+        width: 260
+        height: 0
+        configCollapsed: true

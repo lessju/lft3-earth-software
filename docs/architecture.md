@@ -1,5 +1,10 @@
 # DGX Spark receive + spectrometer architecture (one RFSoC 4x2 board, one 100G link)
 
+> **Status (2026-11-12):** the first implementation is a CyberEther plugin (`pipeline/`, described in
+> `docs/pipeline.md`): DAQIRI receiver → fused fine spectrometer (1.19 kHz, interim) → FBH5. The rawspec
+> design and sizing below remain the plan for Hz-level resolution, which needs cuFFT-sized FFTs. The
+> "corner turn" here is the receiver's scatter kernel. The 4 inputs are 2 dual-pol beams, Stokes I formed on the GPU.
+
 ```
 RFSoC 4x2 ──100GbE──► ConnectX-7 (one PCIe Gen5 x4 half, ~95 Gb/s usable)
                          │ hardware flow steering by UDP dst port

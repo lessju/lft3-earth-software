@@ -1,0 +1,7 @@
+# The station: which boards make up the instrument, and where data goes. Read by lft3-board (all boards
+# unless -b is given), lft3-pipeline and lft3-plot. Boards are described in config/boards/<name>.yaml.
+name: lft3-earth-lab
+boards:
+  - rfsoc0
+  # - rfsoc1 ... rfsoc5 (6 boards in the full system; each needs a unique board_id and destination)
+data_dir: /opt/lft3arth/data         # captures/, spectra/, runs/ live under here

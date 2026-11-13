@@ -1,7 +1,26 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .pytest_cache/
+.ruff_cache/
+/build/
+/dist/
+.venv/
+
+# Data products and captures (live in /opt/lft3arth/data, never in the repo)
 *.pcap
 *.fil
 *.h5
-build/
+*.fbh5
+*.jsonl
+
+# C++ plugin build (pipeline/subprojects has its own .gitignore)
+pipeline/build/
+
+# Editors
+.vscode/
+.idea/
+
+# Internal design document, not for the public repo
+docs/full_architecture.pdf

@@ -1,0 +1,10 @@
+[wrap-git]
+directory = daqiri
+url = https://github.com/NVIDIA/daqiri.git
+revision = ea1a5f93b482b13b5a4a33e043a5fd6cdb1e4b29
+depth = 1
+clone-recursive = true
+patch_directory = daqiri
+
+[provide]
+daqiri = daqiri_dep
