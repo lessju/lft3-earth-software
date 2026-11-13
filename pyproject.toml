@@ -19,6 +19,7 @@ dev = ["pytest>=7", "ruff"]
 lft3-board = "lft3.cli.board:main"
 lft3-pcap = "lft3.cli.pcap:main"
 lft3-pipeline = "lft3.cli.pipeline:main"
+lft3-search = "lft3.search.hyperseti_search:main"   # runs in the search venv (scripts/setup_search_env.sh)
 lft3-plot = "lft3.cli.plot:main"
 
 [tool.setuptools.packages.find]

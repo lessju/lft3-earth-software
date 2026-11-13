@@ -152,6 +152,7 @@ class Capture {
     double unixT0_ = 0.0;
     std::uint64_t received_ = 0, filtered_ = 0;
     std::uint64_t published_ = 0;
+    std::uint64_t stopMissing_ = 0, stopPartial_ = 0;   // incomplete blocks cut off by the stop (not loss)
     std::chrono::steady_clock::time_point start_;
 
     // synthetic
@@ -557,9 +558,9 @@ void Capture::publishStats() {
     s.packetsDuplicate.store(a.packetsDuplicate, std::memory_order_relaxed);
     s.packetsLate.store(a.packetsLate, std::memory_order_relaxed);
     s.packetsNoBuffer.store(a.packetsNoBuffer, std::memory_order_relaxed);
-    s.packetsMissing.store(a.packetsMissing, std::memory_order_relaxed);
+    s.packetsMissing.store(a.packetsMissing - stopMissing_, std::memory_order_relaxed);
     s.blocksComplete.store(a.blocksComplete, std::memory_order_relaxed);
-    s.blocksPartial.store(a.blocksPartial, std::memory_order_relaxed);
+    s.blocksPartial.store(a.blocksPartial - stopPartial_, std::memory_order_relaxed);
     s.blocksSkipped.store(a.blocksSkipped, std::memory_order_relaxed);
     s.restarts.store(a.restarts, std::memory_order_relaxed);
 }
@@ -643,10 +644,22 @@ bool Capture::run() {
             break;
         }
     }
-    // Seal and publish what is left so readers see every complete block.
+    // Seal and publish what is left so readers see every complete block. Blocks still incomplete at this point
+    // were cut short by the stop, not lost on the way: drop them and do not count their empty slots as missing.
     if (ok) {
         std::vector<SealedBlock> sealed;
         asm_->flush(sealed);
+        for (auto& s : sealed) {
+            if (s.emit && !s.missingSlots.empty()) {
+                stopMissing_ += s.missingSlots.size();
+                stopPartial_++;
+                s.emit = false;
+            }
+        }
+        if (stopPartial_) {
+            LFT3_INFO("stop: dropped %lu incomplete block(s) still being received (%lu packets not counted as missing)",
+                      static_cast<unsigned long>(stopPartial_), static_cast<unsigned long>(stopMissing_));
+        }
         ok = handleSealed(sealed);
         cudaStreamSynchronize(stream_);
         ok = ok && reap(false) && promote();

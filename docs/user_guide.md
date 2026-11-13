@@ -26,8 +26,9 @@ make pipeline-test           # C++/CUDA unit tests on the GPU
 make test && make lint       # Python tests
 ```
 
-* You need docker-group membership; nothing else needs root. The capture container runs privileged
-  (raw NIC access) and readers run as you.
+* You need docker-group membership; nothing else needs root. The capture container gets raw NIC access
+  (`CAP_NET_RAW`, `CAP_IPC_LOCK`, `/dev/infiniband`; set `LFT3_CAPTURE_PRIVILEGED=1` to use `--privileged`
+  instead), and readers run as you.
 * The data directory (`data_dir` in `config/station.yaml`, `/opt/lft3arth/data`) must be writable by you or one
   of your groups.
 * Keep the Spark for the pipeline: one link needs ~23 GB of the 128 GB unified memory and up to half the GPU
@@ -176,30 +177,61 @@ v = r.voltages()                           # CuPy view of the raw-voltage ring (
 
 See `docs/runtime.md` §5 for a complete reader loop (C++ or Python).
 
-## 9. Troubleshooting
+## 9. Searching the spectra (hyperseti)
+
+The narrowband drift search runs in its own Python environment (CuPy for CUDA 13 needs Python ≥ 3.10):
+
+```bash
+scripts/setup_search_env.sh                          # once: /opt/lft3arth/search_venv (hyperseti pinned)
+/opt/lft3arth/search_venv/bin/lft3-search FILE.h5    # one file
+/opt/lft3arth/search_venv/bin/lft3-search --watch    # every finished file in <data_dir>/spectra/<board>/, keeps going
+/opt/lft3arth/search_venv/bin/lft3-search --watch --once   # one pass
+```
+
+* Hits go to `<data_dir>/hits/<board>/<file>.csv`: frequency, drift rate, S/N, channel, a `label`, obs id and
+  stream. `hits/searched.txt` records which files are done.
+* Only finished files are searched: a newer file of the same beam exists, or the file has not changed for 2 min.
+  A file that is still being written is never opened.
+* Defaults suit 1.19 kHz / 1 s spectra: no spectral-kurtosis flagging, drifts up to 200 Hz/s (`--max-drift`),
+  S/N ≥ 20 (`--snr`).
+* Hits within two fine channels of a board spur (every 125 MHz) or in Wi-Fi channel 1 are labelled
+  `rfi:...`, not removed.
+* Speed: about 2.5 s for 70 s of one beam, i.e. far faster than real time.
+* **Do not run large searches on the Spark during a live capture.** Searching a 1.2 GB file at full speed loaded
+  the shared memory bus enough that the NIC discarded 277 packets (`rx_discards_phy`). Search after the run, on
+  another machine, or with `--gulp` reduced. See `docs/runtime.md` §6.
+
+## 10. Troubleshooting
 
 | Symptom | Likely cause / what to do |
 |---|---|
 | `already running: lft3-rfsoc0-link0-…` | a previous run is still up: `lft3-pipeline stop -b rfsoc0` |
-| `the capture did not create its ring` | see `<stream>-capture.log`: DAQIRI failed (wrong `interface`, NIC used by another process, no privileged container) or the binaries are missing (`make pipeline`) |
+| `the capture did not create its ring` | see `<stream>-capture.log`: DAQIRI failed (wrong `interface`, NIC used by another process, RDMA devices not passed in: try `LFT3_CAPTURE_PRIVILEGED=1`) or the binaries are missing (`make pipeline`) |
 | rate 0 Gb/s, blocks not increasing | board not streaming: `lft3-board status`; destination MAC: `lft3-board set-dest-mac`; link: `ip link` |
 | rate ≈ 60.8 Gb/s but `missing packets` rising | if `nic-<link>.csv` shows `rx_out_of_buffer` / `rx_discards_phy`, the host lost them; if those are flat, the packets never arrived (board or link) |
+| `missing packets` rising with `rx_discards_phy` in `nic-<link>.csv` | the NIC could not write to host memory fast enough: another heavy job (search, large copies) is loading the memory bus; stop it |
 | reader `over` (overruns) rising, `lag` large | the GPU or memory is overloaded: other GPU jobs, too many links (§10), or a slow disk under the writer; the capture itself is unaffected |
 | `Permission denied` in a reader log | the data directory is not writable by you or your groups |
 | `no ring … within 30 s` (reader) | the capture died or uses another stream name; check the capture log |
 | dump reply `error no data in the ring yet` | trigger sent before the first block; wait a second |
 | missing first spectrum | integrations are aligned to whole seconds of the board's time base; the first (partial) second is skipped by design |
 
-## 10. Capacity of one Spark
+## 11. Capacity of one Spark
 
 Measured (`pipeline/bench/capacity/`; details in `docs/runtime.md` §6):
 
 | Streams (links) | Beams | Fits? | GPU used |
 |---|---|---|---|
-| 2 (one board, both links) | 4 | yes, with room for searches | 46 % |
-| 4 (two boards) | 8 | compute yes (91 %), needs 4 network links into the Spark (switch, unverified) | 91 % |
-| 5 | 10 | at the compute limit | 96 % |
+| 2 (one board, both links) | 4 | yes, with room for (throttled) searches | 46 % |
+| 4 (two boards) | 8 | compute yes, but needs 4 network links into the Spark (switch, unverified) | 87 % |
+| 5 | 10 | passes the synthetic test, no headroom for the NICs | 96 % |
 | 6 | 12 | no | — |
 
 For 5 boards with 2 links each, plan **one Spark per board (5 Sparks)**. Three are enough only if each Spark can
 take 4 links and the searches run elsewhere.
+
+Two cautions:
+* Other heavy jobs on the capture host can make the NIC drop packets through memory-bus contention, even when the
+  GPU is not full (§9).
+* At ~1 Hz resolution (Nf = 2^17), one Spark can process about one full-band stream; see `docs/runtime.md` §2
+  (rawspec comparison).

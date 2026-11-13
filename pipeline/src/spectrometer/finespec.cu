@@ -1,5 +1,8 @@
 #include "spectrometer/finespec.hh"
 
+#include <cstdlib>
+#include <string>
+
 namespace Lft3 {
 
 namespace {
@@ -130,6 +133,123 @@ __global__ void CoarseDetectKernel(const InT* __restrict__ input, float* __restr
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------------------
+// Warp FFT (fftLength = R * 32, R = 2, 4, 8): one warp per (coarse channel, beam), entirely in registers,
+// no shared memory and no __syncthreads (the shared-memory kernel above is bound by its 56 barriers per block).
+//
+// Cooley-Tukey with N = R * 32, input n = j + 32 k (lane j, register k), output f = q + R m:
+//   X[q + R m] = sum_j W_32^{j m} [ W_N^{j q} sum_k x[j + 32 k] W_R^{k q} ]
+// 1. R-point DFT over the lane's own registers (k -> q), 2. twiddle W_N^{j q}, 3. for each q a 32-point DFT
+// across the lanes (radix-2 decimation in frequency with __shfl_xor), which leaves lane l holding m = bitrev5(l).
+// X and Y are transformed together; |X|^2 + |Y|^2 is accumulated over segments in registers.
+// Loads: register k of all lanes = samples 32k .. 32k+31 = 128 contiguous bytes (X, Y interleaved).
+
+__device__ inline float2 CMul(float2 a, float2 b) { return make_float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+
+template <int R>
+__global__ void FineSpecWarpKernel(const char2* __restrict__ input, float* __restrict__ output, FineSpecGeometry g) {
+    constexpr int N = R * 32;
+    const std::uint32_t lane = threadIdx.x & 31;
+    const std::uint32_t channel = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    const std::uint32_t beam = blockIdx.y;
+    if (channel >= g.channels) return;
+
+    // Per-lane constants: W_R^{kq}, W_N^{lane q}, and the 5 butterfly twiddles of the lane.
+    float2 wr[R][R];
+#pragma unroll
+    for (int k = 0; k < R; k++)
+#pragma unroll
+        for (int q = 0; q < R; q++) {
+            float sn, cs;
+            sincospif(-2.0f * static_cast<float>((k * q) % R) / static_cast<float>(R), &sn, &cs);
+            wr[k][q] = make_float2(cs, sn);
+        }
+    float2 wn[R];
+#pragma unroll
+    for (int q = 0; q < R; q++) {
+        float sn, cs;
+        sincospif(-2.0f * static_cast<float>(lane * q) / static_cast<float>(N), &sn, &cs);
+        wn[q] = make_float2(cs, sn);
+    }
+    float2 wb[5];
+#pragma unroll
+    for (int s = 0; s < 5; s++) {
+        const std::uint32_t h = 16u >> s;
+        float sn, cs;
+        sincospif(-2.0f * static_cast<float>(lane & (h - 1)) / static_cast<float>(2 * h), &sn, &cs);
+        wb[s] = make_float2(cs, sn);
+    }
+
+    float acc[R];
+#pragma unroll
+    for (int q = 0; q < R; q++) acc[q] = 0.0f;
+
+    const char4* row = reinterpret_cast<const char4*>(input) +
+                       (static_cast<std::uint64_t>(beam) * g.channels + channel) * g.rowLength;
+    for (std::uint32_t m = 0; m < g.segments; m++) {
+        float2 x[R], y[R];
+#pragma unroll
+        for (int k = 0; k < R; k++) {
+            const char4 v = row[m * N + lane + 32 * k];
+            x[k] = make_float2(v.x, v.y);
+            y[k] = make_float2(v.z, v.w);
+        }
+        float2 X[R], Y[R];
+#pragma unroll
+        for (int q = 0; q < R; q++) {
+            float2 sx = make_float2(0.f, 0.f), sy = make_float2(0.f, 0.f);
+#pragma unroll
+            for (int k = 0; k < R; k++) {
+                const float2 a = CMul(x[k], wr[k][q]), b = CMul(y[k], wr[k][q]);
+                sx.x += a.x; sx.y += a.y; sy.x += b.x; sy.y += b.y;
+            }
+            X[q] = CMul(sx, wn[q]);
+            Y[q] = CMul(sy, wn[q]);
+        }
+#pragma unroll
+        for (int s = 0; s < 5; s++) {
+            const std::uint32_t h = 16u >> s;
+            const bool upper = lane & h;
+#pragma unroll
+            for (int q = 0; q < R; q++) {
+                const float2 ox = make_float2(__shfl_xor_sync(0xffffffffu, X[q].x, h), __shfl_xor_sync(0xffffffffu, X[q].y, h));
+                const float2 oy = make_float2(__shfl_xor_sync(0xffffffffu, Y[q].x, h), __shfl_xor_sync(0xffffffffu, Y[q].y, h));
+                if (upper) {
+                    X[q] = CMul(make_float2(ox.x - X[q].x, ox.y - X[q].y), wb[s]);
+                    Y[q] = CMul(make_float2(oy.x - Y[q].x, oy.y - Y[q].y), wb[s]);
+                } else {
+                    X[q] = make_float2(X[q].x + ox.x, X[q].y + ox.y);
+                    Y[q] = make_float2(Y[q].x + oy.x, Y[q].y + oy.y);
+                }
+            }
+        }
+#pragma unroll
+        for (int q = 0; q < R; q++) acc[q] += X[q].x * X[q].x + X[q].y * X[q].y + Y[q].x * Y[q].x + Y[q].y * Y[q].y;
+    }
+
+    const std::uint32_t mIdx = __brev(lane) >> 27;   // this lane's 32-point output index
+    const std::uint64_t perBeam = static_cast<std::uint64_t>(g.channels) * N / g.binsPerOutput;
+#pragma unroll
+    for (int q = 0; q < R; q++) {
+        const std::uint32_t bin = (q + R * mIdx + N / 2) % N;   // fftshift
+        const std::uint64_t fine = static_cast<std::uint64_t>(channel) * N + bin;
+        if (g.binsPerOutput == 1) {
+            output[static_cast<std::uint64_t>(beam) * perBeam + fine] += acc[q];
+        } else {
+            atomicAdd(output + beam * perBeam + fine / g.binsPerOutput, acc[q]);
+        }
+    }
+}
+
+template <int R>
+cudaError_t LaunchWarp(const void* input, float* output, const FineSpecGeometry& g, cudaStream_t stream) {
+    constexpr std::uint32_t kWarpsPerBlock = 8;
+    const dim3 grid((g.channels + kWarpsPerBlock - 1) / kWarpsPerBlock, g.beams);
+    FineSpecWarpKernel<R><<<grid, kWarpsPerBlock * 32, 0, stream>>>(static_cast<const char2*>(input), output, g);
+    return cudaGetLastError();
+}
+
 }  // namespace
 
 cudaError_t LaunchCoarseDetect(const void* input, bool inputCF32, float* output,
@@ -157,6 +277,20 @@ cudaError_t LaunchFineSpec(const void* input, bool inputCF32, float* output,
     if (g.rowLength < g.segments * g.fftLength || g.fftLength < 2 || g.fftLength > kFineSpecMaxFftLength || (g.fftLength & (g.fftLength - 1)) != 0 ||
         g.binsPerOutput == 0 || (static_cast<std::uint64_t>(g.channels) * g.fftLength) % g.binsPerOutput != 0) {
         return cudaErrorInvalidValue;
+    }
+    // CI8 input, 64/128/256 points: the warp kernel (no shared memory, no barriers). Otherwise the shared-memory
+    // kernel. LFT3_FINESPEC_KERNEL=shared forces the latter (comparisons, benchmarks).
+    static const bool forceShared = [] {
+        const char* e = std::getenv("LFT3_FINESPEC_KERNEL");
+        return e && std::string(e) == "shared";
+    }();
+    if (!inputCF32 && !forceShared) {
+        switch (g.fftLength) {
+            case 64: return LaunchWarp<2>(input, output, g, stream);
+            case 128: return LaunchWarp<4>(input, output, g, stream);
+            case 256: return LaunchWarp<8>(input, output, g, stream);
+            default: break;
+        }
     }
     std::uint32_t logLength = 0;
     while ((1u << logLength) < g.fftLength) logLength++;

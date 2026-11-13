@@ -10,7 +10,7 @@ Status (2026-11-13): implemented, unit-tested, running on the live board. Live r
 
 ```
               one process per 100 GbE link ("stream" = <board>-<link>)
-             ┌──────────────── lft3-capture (C++/CUDA, privileged for DAQIRI) ────────────────┐
+             ┌──────────── lft3-capture (C++/CUDA, CAP_NET_RAW + IPC_LOCK for DAQIRI) ─────────┐
  100 GbE ──► │ DAQIRI RX worker (busy-polls 1 core)                                            │
              │ main thread: parse headers → Assembler (order, gaps, restarts) → scatter kernel │
              │              → seal block (zero-fill) → publish when its kernels completed      │
@@ -83,12 +83,45 @@ In the order they were made. Each one is backed by a measurement on this machine
    * The spectrometer now computes the coarse power per board channel from its own fine spectrum (sum of a
      channel's 128 bins / 128, Parseval). It agrees with the direct computation to 2.6×10⁻⁶ and costs no GPU time.
    * The coarse reader remains as an option for a faster cadence (`--quicklook 0.1`).
-10. **FFT kernel experiments.** A shared-memory twiddle table (bit-identical results) was *slower* (543 vs 504 µs
-    per block). 4-byte loads alone were neutral (501 µs). The fused kernel is bound by latency and
-    `__syncthreads` (64-thread CUDA blocks, 56 synchronised stages per block), not by arithmetic. The next step
-    for more capacity is a warp-shuffle radix-4 FFT with several channels per CUDA block (see §7).
-11. **Capacity measured** (§6): 4 streams with margin and 5 at the limit of compute. The network allows 2 links
-    per Spark with direct cables.
+10. **FFT kernel: from shared memory to one warp per FFT.**
+    * A shared-memory twiddle table (bit-identical results) was *slower* (543 vs 504 µs per block); 4-byte loads
+      alone were neutral (501 µs). The shared-memory kernel is bound by latency and `__syncthreads`: 64-thread
+      CUDA blocks and 56 barriers per block of data.
+    * The **warp kernel** computes each 64/128/256-point FFT inside one warp, in registers. Each lane holds R
+      samples (R = N/32), does an R-point DFT and a twiddle, then a 32-point FFT across the lanes with
+      `__shfl_xor`, with no shared memory and no barriers.
+    * Result: **302 µs instead of 500 µs per block (1.66×)**, now close to memory-bound (~167 GB/s). It matches
+      the reference DFT to < 10⁻⁴ for 64/128/256 points, and the previous output to float rounding (max
+      4.6×10⁻⁶, identical peak bins).
+    * Other lengths, and `LFT3_FINESPEC_KERNEL=shared`, use the shared-memory kernel.
+11. **Capacity measured** (§6): with the warp kernel, 5 streams pass with margin, 6 do not. The network allows 2
+    direct links per Spark.
+12. **2-hour live soak** (2026-11-13, 6.59×10⁹ packets, 23 DDR dumps + 23 raw-voltage dumps every 5 min):
+    * no packet loss of the system's own making, 7 201 spectra with 0 reader overruns, every raw dump complete;
+    * the earlier rare gaps at DDR dumps (2 in 121) did not recur (0 in 23);
+    * the one loss (277 packets) happened while a hyperseti search ran on the same Spark (item 13);
+    * stopping used to count the last, half-received block as "missing": incomplete blocks at stop are now dropped
+      and logged instead.
+13. **Memory-bus contention can cost packets at the NIC.** A hyperseti search of a 1.2 GB file, running alongside
+    the live capture, loaded the shared LPDDR5x enough that the NIC discarded 277 packets (`rx_discards_phy`;
+    DAQIRI's queue never ran empty). Host pause frames (`tx_global_pause`) did not prevent it, so the board
+    probably ignores 802.3x pause. The readers were unaffected, and the synthetic capacity benchmark cannot show
+    this, since no NIC is involved. **Heavy GPU or memory jobs on the capture host must be throttled or moved
+    elsewhere.**
+14. **rawspec comparison** (built for sm_121; CUDA 13 needed a 3-line patch to its cuFFT error-name table, and 2^17
+    needs `LOAD_TEXTURE_WIDTH_POWER=17`). Run on a GUPPI RAW dump from the soak:
+    * same algorithm: identical channel order, values equal to ours after rawspec's 1/127 sample scaling
+      (median relative difference 7.6×10⁻⁸);
+    * at 128 points, rawspec needs 9.2 ms per block per beam at best (`Nbc` 64), against our 0.15 ms: **about 60×
+      slower**, because it is built for very long FFTs;
+    * at **2^17 points** (1.16 Hz), rawspec needs 13.2 ms + 5.2 ms copy per block per beam (real time = 6.7 ms):
+      **it cannot keep up with one beam**;
+    * the floor, plain cuFFT 2^17 via CuPy: FFTs alone at 3.1× real time per beam; with separate |X|² and
+      accumulate passes 0.8×. A Hz-resolution path must fuse detection into the FFT, and even then one Spark
+      handles **about one full-band stream** at ~1 Hz (§7).
+15. **Capture without `--privileged`**: `--cap-add NET_RAW --cap-add IPC_LOCK --device /dev/infiniband` is enough
+    for DAQIRI (verified live, 60.84 Gb/s, no loss). This is now the default; `LFT3_CAPTURE_PRIVILEGED=1` restores
+    `--privileged`.
 
 ## 3. Code map
 
@@ -103,7 +136,7 @@ In the order they were made. Each one is backed by a measurement on this machine
 | `pipeline/src/capture/daqiri_config.{hh,cc}` | DAQIRI raw-ibverbs RX config: one queue, header/data split, flow rule |
 | `pipeline/src/capture/pcap.{hh,cc}` | Classic pcap reader for the file source |
 | `pipeline/src/capture/main.cc` | `lft3-capture`: sources (network/synthetic/file), batches, sealing, publishing, statistics |
-| `pipeline/src/spectrometer/finespec.{hh,cu}` | Fused fine spectrometer kernel (shared-memory FFT ≤ 2048, Stokes I, segment sum) and coarse power kernel |
+| `pipeline/src/spectrometer/finespec.{hh,cu}` | Fused fine spectrometer: warp FFT (64/128/256 points) or shared-memory FFT (≤ 2048), Stokes I, segment sum; coarse power kernel |
 | `pipeline/src/spectrometer/fbh5_file.{hh,cc}`, `axes.hh` | FBH5 writer (filterbankc99; chunked, shuffle + deflate), frequency axes |
 | `pipeline/src/spectrometer/main.cc` | `lft3-spectrometer`: integration windows, writer thread, fine/coarse/latest products |
 | `pipeline/src/dump/{guppi,main}` | `lft3-dump`: trigger socket, window copy, GUPPI RAW writer |
@@ -112,6 +145,7 @@ In the order they were made. Each one is backed by a measurement on this machine
 | `pipeline/bench/capacity/` | Multi-stream capacity benchmark + NIC-DMA memory-load stand-in |
 | `pipeline/docker/Dockerfile` | `lft3-runtime` image: CUDA 13 devel + rdma-core + meson/cmake (also builds `tools/viewer`) |
 | `src/lft3/ring.py` | Python mirror of the control block: status, slot metadata, Prometheus text, dump commands, CuPy access |
+| `src/lft3/search/hyperseti_search.py` | `lft3-search`: hyperseti on finished fine FBH5 files, hits CSV with RFI labels (search venv) |
 | `src/lft3/pipeline/runtime.py` | Run planner: board config + options → per-process `docker run` commands |
 | `src/lft3/cli/pipeline.py` | `lft3-pipeline run / status / trigger / stop` |
 
@@ -211,8 +245,8 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
 
 ### 4.5 Orchestration (`lft3-pipeline`, `lft3.pipeline.runtime`)
 
-* `plan_run(board, RunOptions)` → for each link: a capture (privileged with `--net host` for the network source,
-  pinned to the link's 3 cores) and readers (unprivileged, `--net none`, the caller's uid and groups, on the
+* `plan_run(board, RunOptions)` → for each link: a capture (for the network source `--net host` with
+  `CAP_NET_RAW`, `CAP_IPC_LOCK` and `/dev/infiniband`, pinned to the link's 3 cores) and readers (unprivileged, `--net none`, the caller's uid and groups, on the
   link's `reader_cpus`). All containers share the host IPC namespace.
 * `run` starts each capture, waits for its ring, then starts its readers. It pumps each process's output to
   `<run_dir>/<stream>-<role>.log`, prints a status line from the rings, appends `status.jsonl`, logs NIC counters
@@ -260,7 +294,7 @@ C++ API if a reader needs that.
 | Work | GPU time per 6.71 ms block | Notes |
 |---|---|---|
 | Scatter (6 launches of ≤ 1024 packets) | 0.50 ms (7.4 %) | ~200 GB/s: memory-bound |
-| Fine spectrometer | 0.50 ms (7.5 %) | ~100 GB/s: latency/sync-bound |
+| Fine spectrometer, warp kernel | 0.30 ms (4.5 %) | ~167 GB/s, near memory-bound (shared-memory kernel: 0.50 ms) |
 | Coarse quick-look (now derived on the CPU) | 0 (was 0.23 ms) | |
 | CPU | 1 core busy-polling (DAQIRI worker), ~4 % processing thread, ~18 % spectrometer | |
 | Memory | ~23 GB by default: ring 2 s = 15 GB VMM, dump window 1 s = 7.5 GB pinned, DAQIRI 0.5 GB | |
@@ -276,13 +310,16 @@ C++ API if a reader needs that.
 | 1 | 60.8 | pass | 17 % | |
 | 2 | 121.6 | pass | 46 % | |
 | 3 | 182.4 | pass | 71 % | |
-| 4 | 243.2 | pass | 91 % | |
-| 5 | 304.0 | pass, no margin | 96 % | 4.4 ms of 6.7 |
-| 6 | 364.8 | **fail**: spectrometers overrun (captures still at real time, no packet loss) | 96 % | 9.2 ms |
+| 4 | 243.2 | pass | 87 % (91 % with the shared-memory kernel) | |
+| 5 | 304.0 | pass | 96 % | 2.5 ms of 6.7 (4.4 ms with the shared-memory kernel) |
+| 6 | 364.8 | **fail**: spectrometers overrun (captures still at real time, no packet loss) | 96 % | 10 ms |
 
-Utilisation grows faster than linearly because the streams compete for the shared 273 GB/s LPDDR5x bus, which
-slows every kernel. At 6 streams the isolation worked as designed: every capture stayed at real time, and only
-the readers lost blocks.
+N = 1–3 were measured with the shared-memory kernel. Utilisation grows faster than linearly because the streams
+compete for the shared 273 GB/s LPDDR5x bus, which slows every kernel. At 6 streams the isolation worked as
+designed: every capture stayed at real time, and only the readers lost blocks.
+
+**Caveat (decision 13):** these runs have no NIC. On the live system, memory-bus load from other jobs can make the
+NIC itself drop packets before any of our code sees them. Leave headroom on the memory bus, not only on the GPU.
 
 **Network limits** (from `docs/architecture.md` and DAQIRI's Spark report; not measurable here with one board):
 * Each of the Spark's two QSFP ports is two ~100G PCIe halves.
@@ -292,23 +329,27 @@ the readers lost blocks.
 **Answer for 5 boards × 2 streams (10 streams, 20 beams, 608 Gb/s):**
 
 * **One Spark per board** (2 direct-attached links = 2 streams, 4 beams, 122 Gb/s) is the configuration that is
-  known to work. It uses 46 % of the GPU, which leaves room for the planned searches. **5 Sparks.**
-* **Two boards per Spark** (4 streams) fits the compute (91 % GPU) but leaves no GPU for searches. It needs
-  4 links into one Spark, i.e. a switch or breakout into its two 200G ports with flows steered to all four PCIe
-  halves (unverified), and ~76 GB of memory (ring 1.5 s, dump 1 s per link). **3 Sparks** (4 + 4 + 2 streams).
-* 5 streams per Spark is the compute limit with no margin. 6 or more do not fit.
+  known to work. It uses under half of the GPU, which leaves room for searches, as long as they are throttled
+  (decision 13). **5 Sparks.**
+* **Two boards per Spark** (4 streams) fits the compute (87 % GPU) but leaves little GPU or memory bandwidth for
+  searches. It needs 4 links into one Spark, i.e. a switch or breakout into its two 200G ports with flows steered
+  to all four PCIe halves (unverified), and ~76 GB of memory (ring 1.5 s, dump 1 s per link). **3 Sparks**
+  (4 + 4 + 2 streams).
+* 5 streams per Spark pass the synthetic test but leave no headroom on the memory bus for the NICs. 6 or more do
+  not fit.
+* **At ~1 Hz resolution**, the FFT alone limits one Spark to about one full-band stream (decision 14). Hz
+  resolution for all 10 streams needs subbands (only part of the band at Hz resolution), more GPUs, or a
+  dedicated search cluster fed with voltages.
 
 ## 7. Open items and next steps
 
-* **Faster FFT kernel** (warp-shuffle radix-4, several channels per CUDA block). It would raise compute capacity
-  and leave GPU for searches at 4 streams. Fine spectrometer time is the binding cost under contention.
-* **Hz resolution** (Nf = 2^16–2^17): cuFFT with load callbacks gathering 64–128 blocks per channel row (232 GB/s
-  measured gather); ring ≥ 2 × FFT length (12.9 GB at 2^17). See `docs/architecture.md` for output volume.
-* **Searches**: hyperseti as a Python reader on the fine spectra or voltages; heimdall fed from coarse
-  detection.
+* **Hz resolution** (Nf = 2^16–2^17): a fused path (cuFFT with load/store callbacks, or a custom kernel), gathering
+  64–128 blocks per channel row (232 GB/s measured gather); ring ≥ 2 × FFT length (12.9 GB at 2^17). Unmodified
+  rawspec is too slow on GB10 (decision 14). Decide the band and output volume first (`docs/architecture.md`).
+* **Searches**: `lft3-search` (hyperseti on finished FBH5 files) works. Next: throttle it, or run it off the capture
+  host (decision 13); a live search reading spectra from a ring instead of files; heimdall from coarse detection.
 * **Second link**: config entry ready (commented in `config/boards/rfsoc0.yaml`). Confirm its PCI function, UDP
   port and source IP when it is cabled.
-* `CAP_NET_RAW` instead of a privileged container; time reference from a PPS-aligned sync
-  (`docs/firmware_requests.md`).
-* The two rare 13–30 ms gaps at DDR dumps (2 in 121) are still unattributed. `nic-<link>.csv` is logged on every
-  network run to settle it.
+* Time reference from a PPS-aligned sync (`docs/firmware_requests.md`).
+* Test whether the board honours 802.3x pause frames (decision 13); if it did, NIC buffer overflows would turn
+  into short delays instead of loss.

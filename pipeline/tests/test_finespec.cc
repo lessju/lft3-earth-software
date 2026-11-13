@@ -43,7 +43,8 @@ TEST_CASE("Fused fine spectrometer matches a reference DFT", "[lft3][finespec][c
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
         SKIP("No CUDA device.");
     }
-    for (const std::uint32_t S : {2u, 16u, 128u}) {
+    // 64, 128, 256: warp kernel; 2, 16, 1024: shared-memory kernel. 5 channels: not a multiple of the 8 warps per block.
+    for (const std::uint32_t S : {2u, 16u, 64u, 128u, 256u, 1024u}) {
         const FineSpecGeometry g = {2, 3, 5, S};
         const std::size_t samples = static_cast<std::size_t>(g.beams) * g.segments * g.channels * S * 2;   // complex
         std::vector<std::int8_t> host(samples * 2);

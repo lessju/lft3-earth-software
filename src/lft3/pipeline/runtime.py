@@ -2,7 +2,8 @@
 
 For every link of a board (``receiver.links`` in the board configuration) a run consists of:
 
-* ``capture``       lft3-capture: the link (or a synthetic / pcap source) -> the ring ``<board>-<link>``
+* ``capture``       lft3-capture: the link (or a synthetic / pcap source) -> the ring ``<board>-<link>``; for the
+                    network source with CAP_NET_RAW + CAP_IPC_LOCK and /dev/infiniband (not --privileged)
 * ``spectrometer``  lft3-spectrometer fine mode -> FBH5 in <data_dir>/spectra/<board>/, plus the coarse power per
                     board channel derived from it (Parseval, no second pass over the ring) -> FBH5 in
                     <data_dir>/spectra/<board>/quicklook/ and <run_dir>/latest/<board>_latest.{json,f32}
@@ -11,7 +12,7 @@ For every link of a board (``receiver.links`` in the board configuration) a run 
 * ``dump``          lft3-dump: GUPPI RAW windows on trigger -> <data_dir>/dumps/<board>/
 
 Each process runs in its own container (image ``lft3-runtime``) so it can be restarted on its own and a crash
-in a reader never touches the capture. Capture of a network source runs privileged (DAQIRI raw ibverbs); readers
+in a reader never touches the capture. Capture of a network source gets NIC access (DAQIRI raw ibverbs); readers
 run as the invoking user. All share the host IPC namespace (/dev/shm: ring control blocks and sockets).
 
     plan = plan_run(board, RunOptions(source="synthetic"), data_dir="/opt/lft3arth/data", run_dir=...)
@@ -97,7 +98,13 @@ class Process:
         cmd = ["docker", "run", "--rm", "--name", self.container, "--gpus", "all", "--ipc=host",
                "--ulimit", "memlock=-1", "--stop-timeout", "30", "-e", "HOME=/tmp", "-w", str(REPO)]
         if self.privileged:
-            cmd += ["--privileged", "--net", "host"]
+            # DAQIRI raw ibverbs needs the RDMA devices, CAP_NET_RAW (raw packet queues) and CAP_IPC_LOCK (pinned
+            # buffers) -- verified live 2026-11-13; a fully privileged container is not needed.
+            # LFT3_CAPTURE_PRIVILEGED=1 falls back to --privileged.
+            if os.environ.get("LFT3_CAPTURE_PRIVILEGED") == "1":
+                cmd += ["--privileged", "--net", "host"]
+            else:
+                cmd += ["--cap-add", "NET_RAW", "--cap-add", "IPC_LOCK", "--device", "/dev/infiniband", "--net", "host"]
         else:
             cmd += ["--user", f"{uid}:{gid}", "--net", "none"]
             for g in sorted(set(os.getgroups()) - {gid}):   # e.g. the data directory's group (lft3eath)

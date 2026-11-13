@@ -14,7 +14,8 @@ src/lft3/                Python package (Python >= 3.8: it shares the casperfpga
   pipeline/                run planner for the real-time runtime (lft3-pipeline)
   ring.py                  Python view of the runtime's voltage rings (status, metrics, triggers, CuPy access)
   products/                readers + plots for spectra (FBH5) and board captures (HDF5)
-  monitoring/              metrics export (Prometheus text, JSON lines)
+  monitoring/              metrics export (Prometheus text, JSON lines), NIC counters
+  search/                  lft3-search: hyperseti on the fine spectra (runs in the search venv)
   config.py                instrument configuration loader (station + boards)
   cli/                     console scripts: lft3-board, lft3-pipeline, lft3-plot, lft3-pcap
 tests/                   pytest (fake casperfpga board; tests/hardware/ needs the live board)
@@ -52,6 +53,7 @@ lft3-board status                  # health of every board
 lft3-board snapshot fft --plot     # PFB spectra / `snapshot adc` / `capture` (triggered DDR dump)
 lft3-pipeline run [--source network|synthetic|file]   # → fine + coarse FBH5 spectra, per link
 lft3-pipeline status / trigger / stop               # watch, raw-voltage dump, stop
+/opt/lft3arth/search_venv/bin/lft3-search --watch   # hyperseti on finished spectra (scripts/setup_search_env.sh)
 lft3-plot waterfall $(lft3-plot latest) --fmin 2400 --fmax 2425 --flatten
 ```
 
@@ -76,5 +78,6 @@ lft3-plot waterfall $(lft3-plot latest) --fmin 2400 --fmax 2425 --flatten
 | Packet decoder, pcap tools, reference spectrometer | unit-tested |
 | Board M&C (`lft3-board`) | station-wide; all commands tested on the live board (start, status, snapshots, DDR dump, MAC, sync) |
 | Pipeline runner, plots (`lft3-pipeline`, `lft3-plot`) | network / synthetic / file sources tested live; status, triggers, metrics |
-| Real-time runtime (`pipeline/`) | live at 60.8 Gb/s, no loss; fine + coarse FBH5, GUPPI RAW dumps; 4–5 streams per Spark measured |
-| Hz-resolution (rawspec-style) path, searches, coordinator | planned |
+| Real-time runtime (`pipeline/`) | live at 60.8 Gb/s; 2 h soak without loss; fine + coarse FBH5, GUPPI RAW dumps; 5 streams per Spark measured |
+| Search (`lft3-search`) | hyperseti on finished FBH5 files; finds the board's spur comb |
+| Hz-resolution path, live searches, coordinator | planned (rawspec too slow on GB10 at 2^17: docs/runtime.md §2) |

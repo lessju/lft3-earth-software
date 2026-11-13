@@ -112,7 +112,9 @@ def test_run_plan(cfg, source, tmp_path):
     assert plan.obs_id == f"{cfg.name}-20261113T000000" and _arg(cap.argv, "--obs-id") == plan.obs_id
     docker = spec.docker_argv(uid=1000, gid=1000)
     assert docker[:3] == ["docker", "run", "--rm"] and "--ipc=host" in docker and "--privileged" not in docker
-    assert "--privileged" in cap.docker_argv() or source != "network"
+    if source == "network":
+        d = cap.docker_argv()
+        assert "--privileged" not in d and "NET_RAW" in d and "IPC_LOCK" in d and "/dev/infiniband" in d
 
 
 def test_run_plan_two_links(cfg, tmp_path):

@@ -58,6 +58,7 @@ make pipeline        # C++/CUDA runtime build in the lft3-runtime container;  ma
 lft3-board status | start | snapshot fft|adc [--plot] | capture [--ddr-size 0xFFFFF] | sync | trigger
 lft3-pipeline run [--source network|synthetic|file --file X.pcap --loop] [--links link0] [--duration S]
 lft3-pipeline status | trigger [--pre --post --label] | stop
+/opt/lft3arth/search_venv/bin/lft3-search FILE.h5 | --watch [--once]      # hyperseti; not during live capture
 lft3-plot info|spectrum|waterfall|capture FILE [--fmin --fmax --flatten];  lft3-plot latest
 lft3-pcap check cap.pcap | synth out.pcap
 
@@ -181,11 +182,24 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 * Per stream: scatter 0.50 ms + finespec 0.50 ms GPU per 6.71 ms block; CPU 1 busy-poll core + ~4 % + ~18 %.
   Quick-look is derived from the fine spectrum (Parseval) instead of a second ring read. Finespec kernel is
   latency/sync-bound (twiddle table: no gain); next step = warp-shuffle radix-4 FFT.
-* **Capacity (pipeline/bench/capacity, synthetic + NIC-DMA memload): 4 streams pass with margin (GPU 91 %), 5 pass
-  at the limit (96 %), 6 fail (readers overrun; captures still real time).** Network: 2 direct 100G links per Spark.
-  5 boards × 2 streams → 5 Sparks (2 streams each, GPU 46 %, room for searches); 3 only with 4 links/Spark via a
-  switch (unverified) and no searches.
-* Containers: capture privileged `--net host`; readers as the user with `--group-add` (data dir is group
+* **Capacity (pipeline/bench/capacity, synthetic + NIC-DMA memload): 4 streams pass with margin (GPU 87 %), 5 pass
+  (96 %, readers ≤ 2.5 ms/block with the warp FFT), 6 fail (readers overrun; captures still real time).** Network:
+  2 direct 100G links per Spark. 5 boards × 2 streams → 5 Sparks (2 streams each, GPU 46 %); 3 only with 4
+  links/Spark via a switch (unverified) and searches elsewhere.
+* **Warp FFT kernel** (64/128/256 points, one warp per FFT, `__shfl_xor`, no shared memory): 0.30 ms vs 0.50 ms per
+  block, matches the DFT reference; `LFT3_FINESPEC_KERNEL=shared` forces the old kernel.
+* **Soak 2026-11-13 (2 h, 23 DDR + 23 raw dumps): no loss of the system's own making**, 0 reader overruns, DDR-dump
+  gaps did not recur (0/23). **But** a hyperseti search running on the Spark made the NIC drop 277 packets
+  (`rx_discards_phy`, memory-bus contention; host pause frames didn't help, the board probably ignores 802.3x).
+  Don't run heavy GPU/memory jobs on the capture host during a live capture.
+* **rawspec** (built sm_121; CUDA 13 cuFFT enum patch; `LOAD_TEXTURE_WIDTH_POWER=17` for 2^17): same spectra as ours
+  (after its 1/127 sample scaling), ~60× slower at Nf = 128, and at Nf = 2^17 too slow for even one beam in real time
+  (13.2 + 5.2 ms per 6.7 ms block). Plain cuFFT 2^17 = 3.1× real time per beam → Hz resolution ≈ 1 stream per Spark.
+* Capture runs with `--cap-add NET_RAW --cap-add IPC_LOCK --device /dev/infiniband` (verified), not --privileged.
+* Search env: `scripts/setup_search_env.sh` → /opt/lft3arth/search_venv (Python 3.12, cupy-cuda13x, hyperseti
+  @a15f7eb; setuptools<81 for blimpy's pkg_resources; hyperseti pulls the generic `cupy` → replaced by the wheel).
+  `lft3-search` defaults: sk_flag off (else 100 % flagged), max_dd 200 Hz/s (10 Hz/s gives "No steps!" at 1.19 kHz).
+* Containers: capture `--net host` + NET_RAW/IPC_LOCK/`/dev/infiniband`; readers as the user with `--group-add` (data dir is group
   `lft3eath`), `--net none`; all `--ipc=host`. Binaries also run on the host (handy for nsys:
   `/opt/nvidia/nsight-systems/2025.3.2/bin/nsys`). The old `lft3-cyberether` image is unused (not deleted).
 * Earlier CyberEther-era facts still valid: first light 2026-11-12 (zero loss; spurs at exact 125 MHz multiples
