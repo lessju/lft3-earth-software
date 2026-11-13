@@ -63,6 +63,7 @@ lft3-plot waterfall $(lft3-plot latest) --fmin 2400 --fmax 2425 --flatten
 |---|---|
 | `docs/user_guide.md` | **Start here:** running the real-time system: setup, config, runs, products, troubleshooting, capacity |
 | `docs/operations.md` | Day-to-day commands for boards, captures, pipeline runs and plots |
+| `docs/system_overview/lft3_system_overview.pdf` | **How the whole system works**, with diagrams (PDF; source in the same folder) |
 | `docs/runtime.md` | How the real-time runtime is implemented, the design decisions behind it, performance and capacity |
 | `docs/monitoring_control.md` | RFSoC M&C: CLI, health checks, metrics, open decisions |
 | `docs/packet_format.md` | Channel and ADC packet formats as implemented |
