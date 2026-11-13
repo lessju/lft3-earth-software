@@ -88,6 +88,11 @@ S = {
     "note": ParagraphStyle("note", fontName="Sans", fontSize=8.6, leading=12, textColor=INK, backColor=colors.HexColor("#eef4fb"),
                            borderColor=ACCENT, borderWidth=0, borderPadding=(6, 8, 6, 8), leftIndent=6, rightIndent=6,
                            spaceBefore=6, spaceAfter=10),
+    "bg": ParagraphStyle("bg", fontName="Sans", fontSize=8.4, leading=11.8, textColor=INK,
+                         backColor=colors.HexColor("#f4f1ea"), borderPadding=(6, 8, 6, 8), leftIndent=6, rightIndent=6,
+                         spaceBefore=5, spaceAfter=10),
+    "num": ParagraphStyle("num", fontName="Serif", fontSize=9.6, leading=13.4, textColor=INK, leftIndent=17,
+                          bulletIndent=3, spaceAfter=2.5, alignment=TA_LEFT),
     "toc1": ParagraphStyle("toc1", fontName="Sans-Bold", fontSize=10, leading=15, leftIndent=0),
     "toc2": ParagraphStyle("toc2", fontName="Sans", fontSize=9, leading=12.5, leftIndent=16, textColor=MUTED),
 }
@@ -180,6 +185,18 @@ def B(*items):
 
 def N(t):
     story.append(Paragraph(t, S["note"]))
+
+
+def BG(title, t):
+    """Background box: explains a concept the average reader may not know."""
+    story.append(Paragraph(f'<font name="Sans-Bold" color="#8a5a12">Background: {title}.</font> {t}', S["bg"]))
+
+
+def NL(*items):
+    """Numbered list."""
+    for i, t in enumerate(items, 1):
+        story.append(Paragraph(t, S["num"], bulletText=f"{i}."))
+    story.append(Spacer(1, 4))
 
 
 def CODE(t):
@@ -281,7 +298,9 @@ def content():
     P("All numbers in this document were measured on the system itself (DGX Spark, GB10) on 12–13 November 2026, "
       "unless stated otherwise. File and command names are set in " + mono("monospace") + ". In the diagrams, colour "
       "shows where something runs: orange is the board and FPGA, grey the network, blue the host CPU, green the GPU "
-      "and its memory, purple storage, and teal the reader processes.")
+      "and its memory, purple storage, and teal the reader processes. Diagrams are kept deliberately sparse: the text "
+      "around them carries the detail. Shaded <i>Background</i> boxes explain concepts that are specialised to radio "
+      "instrumentation or GPU programming; skip them if they are familiar.")
     TABLE([["Quantity", "Value"],
            ["Sampling", "5 GSPS real per ADC input → 1250 MSPS complex after down-conversion"],
            ["Coarse channels (FPGA)", "8192-point, 8-tap polyphase filterbank; 6144 channels of 152.587890625 kHz "
@@ -300,11 +319,8 @@ def content():
 
     # ------------------------------------------------------------------------------------------------ 2
     H1("The system at a glance")
-    FIGURE("f01_system", "The whole system. Each RFSoC board digitises four inputs, channelises them into 152.6 kHz "
-                         "channels and streams them over 100 GbE to the DGX Spark. There, one capture process per link "
-                         "keeps the last ~2 s of voltages in a GPU ring, and independent readers turn them into "
-                         "spectra, raw-voltage dumps and, later, live searches. Control and monitoring use a "
-                         "separate 1 GbE network.")
+    FIGURE("f01_system", "The whole system for one board. Thick arrows carry the 60.8 Gb/s data stream; the dotted "
+                         "arrow is control. The full instrument has five boards with two links each.")
     P("The system has three layers, kept deliberately independent:")
     B("<b>The board</b> (FPGA firmware, built elsewhere) does the hard real-time work at 5 GSPS: sampling, "
       "down-conversion, the coarse polyphase filterbank and packetising. It is controlled and monitored from the host "
@@ -323,20 +339,34 @@ def content():
     # ------------------------------------------------------------------------------------------------ 3
     H1("The RFSoC board")
     H2("Signal chain")
-    FIGURE("f02_signal_chain", "Signal chain inside the FPGA for each of the four inputs.", width=A4[0] - 4.2 * cm)
+    FIGURE("f02_signal_chain", "Signal chain inside the FPGA, for each of the four inputs. The dashed path is the DDR "
+                               "ring buffer, read out only on a trigger.", width=A4[0] - 4.2 * cm)
     P("Each RFSoC 4x2 board has four ADC inputs sampled at 5 GSPS. The digital down-converter mixes each input with "
       "an NCO at −2031.25 MHz and decimates by 4, giving 1250 MSPS complex samples centred on 2031.25 MHz. An "
       "8192-point, 8-tap polyphase filterbank (PFB) splits that 1.25 GHz into 152.587890625 kHz channels. 6144 of "
       "them, 937.5 MHz of the band, are kept. Each channel sample is requantised to 8-bit I and 8-bit Q. The bit "
       "selection " + mono("ch_lsb") + " sets the level: about 11 counts RMS on noise with the current setting, and a "
       "strong tone at −60 dBm clips.")
+    BG("down-conversion, NCO and decimation", "The ADC samples a real-valued signal 5 billion times a second, which "
+       "covers 0–2.5 GHz. The band of interest is shifted down to zero frequency by multiplying the samples with a "
+       "complex sinusoid from a <i>numerically controlled oscillator</i> (NCO) at −2031.25 MHz. After this mixing, a "
+       "signal at 2031.25 MHz sits at 0 Hz and the result is complex: an in-phase (I) and a quadrature (Q) component per "
+       "sample, which together keep track of positive and negative frequency offsets. A low-pass filter then keeps the "
+       "central 1.25 GHz, and since that needs only 1.25 GS/s, three of every four samples are dropped "
+       "(<i>decimation</i>).")
+    BG("polyphase filterbank (PFB)", "A filterbank splits a wideband signal into many narrow frequency channels, each "
+       "with its own lower-rate time series. A plain FFT does this too, but its channels have a sinc-shaped response: "
+       "they overlap strongly and a strong signal leaks into many neighbours. A PFB first multiplies the input by a long, "
+       "carefully designed filter spread over several FFT lengths (here 8 'taps' × 8192 samples) and sums those "
+       "segments, then takes one FFT. The channels come out nearly flat-topped with steep edges and little leakage. "
+       "Each channel's samples are still complex, one every 6.5536 µs (= 8192 / 1.25 GHz).")
     P("One spectrum, all 6144 channels of all four inputs, is produced every 6.5536 µs. The firmware numbers them with "
       "a 58-bit counter <b>t</b> that starts at 0 on every <i>sync</i>. The packetizer sends each spectrum as six UDP "
       "packets of 1024 channels each. In parallel, a DDR4 ring buffer keeps the last 0.86 s of raw 4-bit samples, and "
-      "a trigger reads it out over the same 100 GbE link (UDP port 40000, ~10 Gb/s for ~3.5 s).")
+      "a trigger reads it out through the packetizer over the same 100 GbE link (UDP port 40000, ~10 Gb/s for ~3.5 s).")
 
     H2("Bringing a board up")
-    FIGURE("f15_bringup", "The bring-up sequence performed by lft3-board start (≈ 10 s per board).")
+    FIGURE("f15_bringup", "The bring-up sequence of lft3-board start, about 10 s per board.")
     P(mono("lft3-board start") + " follows the firmware author's bring-up notebook step by step:")
     B("program the bitstream and set the destination MAC (entry 10 of the 100 GbE core's ARP table, which defaults "
       "to broadcast and is lost on every reprogram);",
@@ -347,6 +377,11 @@ def content():
       "PPS period;",
       "issue a <b>sync</b>: t restarts at 0 and the header fields take effect. Some settings (packet mask, fid, "
       "pfb_lsb) only apply after a sync.")
+    BG("MTS, SYSREF and sync", "An RFSoC has several ADC 'tiles', each with its own clock dividers. <i>Multi-tile "
+       "synchronisation</i> (MTS) aligns them so that all inputs sample at the same instants, which matters when inputs "
+       "are later combined (polarisations, beams). It relies on <i>SYSREF</i>, a slow reference pulse distributed with "
+       "the sample clock; NCO settings are also applied on a SYSREF edge so all mixers change phase together. The "
+       "LFT3 firmware's own <i>sync</i> is different: it restarts the spectrum counter t and latches pending settings.")
     P("In a station, every board is initialised in parallel, each under its own lock. The sync writes are then "
       "released together from a barrier, so all boards share a time base to within milliseconds. A PPS-aligned sync "
       "in firmware (requested) would make it exact.")
@@ -372,7 +407,8 @@ def content():
     # ------------------------------------------------------------------------------------------------ 4
     H1("Packets on the wire")
     H2("The channel packet")
-    FIGURE("f03_packet", "Channel packet layout: a 64-byte big-endian header and 1024 channels × 4 inputs × (I, Q).")
+    FIGURE("f03_packet", "Channel packet: a 64-byte header (four of its eight 64-bit words are used) and a payload of "
+                         "1024 channels, each holding one complex sample of each of the four inputs.")
     P("Every channel packet is a UDP datagram of 8256 bytes to port 60000: a 64-byte header and an 8192-byte "
       "payload. The header is eight big-endian 64-bit words. Word 0 holds the spectrum counter t (58 bits), the "
       "packet index b within the spectrum (bindex, 0–5) and the board id fid (3 bits). Words 1–2 hold the four "
@@ -380,6 +416,9 @@ def content():
       "consecutive channels, k = 1024·b + i. Each channel is 8 bytes: input 0 I, input 0 Q, input 1 I, … "
       "input 3 Q, as signed bytes. Inputs 0/1 form beam 0 (X, Y) and inputs 2/3 beam 1 (assumed from the ADC map, "
       "to be verified with an injected tone).")
+    BG("big-endian", "A 64-bit word is eight bytes; 'big-endian' (network order) sends the most significant byte first. "
+       "The Arm CPU stores numbers the other way round (little-endian), so the capture code byte-swaps the four header "
+       "words it reads. The payload is a sequence of single bytes and needs no swapping.")
     TABLE([["", "Per packet", "Per spectrum (6 packets)", "Per second, one link"],
            ["Packets", "1", "6", "915 527"],
            ["UDP payload", "8256 B", "49.5 kB", "7.56 GB (60.5 Gb/s)"],
@@ -388,7 +427,8 @@ def content():
           [0.28, 0.2, 0.24, 0.28], "Channel stream rates (MTU 9000 needed).")
 
     H2("Channels and sky frequency")
-    FIGURE("f04_freq_map", "How PFB bins map to packet channels and sky frequency.")
+    FIGURE("f04_freq_map", "How the PFB's bins are reordered into packet channels k, and the sky frequency of k for an "
+                           "NCO at −2031.25 MHz.")
     P("The PFB produces 8192 bins. The packetizer sends bins 5120–8191 (negative frequency offsets) as packets b = "
       "0–2 and bins 0–3071 (positive offsets) as packets b = 3–5. So the channel index k increases with frequency "
       "across the whole band:")
@@ -404,7 +444,7 @@ def content():
 
     # ------------------------------------------------------------------------------------------------ 5
     H1("The host: NVIDIA DGX Spark")
-    FIGURE("f05_spark", "The DGX Spark as the runtime uses it: CPU cores, GPU, unified memory and I/O.")
+    FIGURE("f05_spark", "The DGX Spark as the runtime uses it. Red: the three cores reserved for link0's capture.")
     P("The DGX Spark is built around the GB10 superchip: 20 Arm cores (10 Cortex-X925 performance cores and 10 "
       "Cortex-A725 efficiency cores) and a Blackwell GPU (compute capability 12.1, 48 SMs). They share <b>128 GB of "
       "LPDDR5x unified memory</b> with a peak bandwidth of 273 GB/s. That single fact shapes the whole design:")
@@ -414,13 +454,24 @@ def content():
       "arithmetic, is the binding constraint (§9).",
       "How memory is allocated still matters. GPU kernels reach 237 GB/s on " + mono("cudaMalloc") + " or CUDA VMM "
       "memory, but only 172 GB/s on host memory registered with " + mono("cudaHostRegister") + ".")
+    BG("DMA and pinned memory", "A network card writes received packets into memory itself, without the CPU copying "
+       "them: <i>direct memory access</i> (DMA). To do so it needs memory that the operating system will never move or "
+       "swap out while the card holds its address: <i>pinned</i> (page-locked) memory. On the Spark that pinned memory "
+       "is the same physical DRAM the GPU reads, so a packet the NIC has written can be read by a GPU kernel directly.")
     P("The ConnectX-7 network card has two QSFP ports. Each appears as two network devices, one per PCIe Gen5 x4 "
       "half. A 100 GbE cable from a board lands on one half, " + mono("enp1s0f0np0") + " (PCI 0000:01:00.0) for link0. "
       "Packets are received with NVIDIA's DAQIRI library using raw ibverbs: a hardware flow rule steers the board's "
       "UDP stream to one receive queue, bypassing the kernel network stack, which only manages ~0.4 Mpps.")
+    BG("kernel bypass and busy-polling", "Normally every packet goes through the operating system's network stack: an "
+       "interrupt, protocol processing and a copy into a socket buffer, costing microseconds per packet. At 915 527 "
+       "packets per second that is too slow. With <i>ibverbs</i> (the RDMA verbs interface of NVIDIA/Mellanox cards) a "
+       "program owns a receive queue directly: it gives the card buffers and finds the filled ones by reading a "
+       "completion queue in memory. DAQIRI's worker thread checks that queue in a tight loop (<i>busy-polling</i>), "
+       "which costs a whole core but never waits for an interrupt.")
     P("CPU cores are assigned per link. For link0: core 5 runs DAQIRI's master thread, core 6 its receive worker "
       "(busy-polling at 100 %), and core 7 the capture thread. The readers run on other cores (8, 9 and the A725 "
-      "cores). A second link would use 15–17.")
+      "cores). A second link would use 15–17. Measured on this machine, GPU kernels reach 237 GB/s reading and 174 "
+      "GB/s writing ordinary GPU allocations.")
 
     # ------------------------------------------------------------------------------------------------ 6
     H1("The real-time runtime")
@@ -430,8 +481,11 @@ def content():
       "and can come and go at any time. The writer never waits for a reader. A reader that falls more than the ring's "
       "length behind loses blocks and counts them as overruns, so the capture stays lossless whatever the readers "
       "do. Each process runs in its own container, so a crashing or slow reader cannot affect the capture.")
-    FIGURE("f14_processes", "Processes and containers for one link. lft3-pipeline starts the capture, waits for its "
-                            "ring to appear, then starts the readers; on stop it reverses the order.")
+    FIGURE("f14_processes", "Processes and containers for one link. They share only /dev/shm and the GPU ring.")
+    P(mono("lft3-pipeline") + " starts the capture first, waits until its ring exists, then starts the readers. On "
+      "stop (Ctrl-C, " + mono("--duration") + " or " + mono("lft3-pipeline stop") + ") it reverses the order: readers "
+      "first, so they close their files while the ring still exists, then the capture. Each run writes its logs, "
+      "status time series and NIC counters to a run directory.")
     N("<b>Why not a dataflow framework?</b> The first implementation was a CyberEther plugin. It ran at line rate, but "
       "CyberEther runs every block in lock-step on one scheduler thread, so any slow consumer stalls the receiver, "
       "which then drops packets. Holoscan 5.0 (too new: a rewrite with Beta APIs) and hashpipe (semaphore handshakes "
@@ -439,12 +493,15 @@ def content():
       "never hold up the receiver. The decision record is in docs/runtime.md §2.")
 
     H2("A packet's journey through memory")
-    FIGURE("f06_data_movement", "Where one stream's bytes go. Every arrow is real memory traffic on the shared "
-                                "LPDDR5x bus.")
+    FIGURE("f06_data_movement", "Where one link's bytes go. Every arrow is traffic on the shared memory bus; red marks "
+                                "the ring slot currently being written.")
     P("Data enters through the NIC's DMA engine. DAQIRI splits each frame: the first 106 bytes (Ethernet, IP and UDP "
       "headers plus the 64-byte LFT3 header) land in a <i>header segment</i> buffer that the CPU reads, and the "
       "8192-byte payload lands in a <i>payload segment</i> buffer. Both are pinned host memory (64 Ki buffers of each, "
       "0.5 GB). The capture thread reads only the headers, about 97 MB/s. It never touches the payloads.")
+    BG("header-data split", "The NIC can scatter one incoming frame into two buffers: the first N bytes into one, the "
+       "rest into another. Here that separates what the CPU needs (headers, 1.3 % of the bytes) from what only the GPU "
+       "needs (samples), so the CPU's caches are never filled with sample data.")
     P("For each packet the CPU decides where the payload belongs: which block (from t), which time row and which "
       "1024-channel group (from b). It appends a small <i>ScatterJob</i> record (payload pointer, block pointer, t, "
       "channel offset) to a pinned job list. Once per burst (up to 1024 packets) a GPU <b>scatter kernel</b> reads all "
@@ -455,7 +512,8 @@ def content():
       "link costs about 30 GB/s of memory traffic before any search runs.")
 
     H2("Lifetime of a packet and of a block")
-    FIGURE("f07_packet_lifetime", "Lifetime of one packet (top lanes) and of the block it ends up in (bottom lanes).")
+    FIGURE("f07_packet_lifetime", "Lifetime of one packet (left) and of the block it ends up in (right of the dashed "
+                                  "line), across the parts of the system that handle them.")
     P("A packet's payload lives in DAQIRI's receive buffer for only 1–2 ms:")
     B("the NIC writes it; the DAQIRI worker hands it out as part of a <i>burst</i> once 1024 packets have arrived "
       "(about 1.1 ms at line rate) or after a 1 ms timeout;",
@@ -469,7 +527,8 @@ def content():
       "The spectrometer normally reads it within a millisecond of publication.")
 
     H2("Assembling blocks")
-    FIGURE("f08_assembler", "The assembler keeps up to four blocks open and seals them strictly in time order.")
+    FIGURE("f08_assembler", "Packets of five consecutive blocks, 16 of each block's 1024 time steps drawn; filled = "
+                            "received. The assembler keeps the four newest blocks open and seals them in time order.")
     P("The assembler (" + mono("pipeline/src/capture/assembler.cc") + ") is plain C++, independent of DAQIRI and CUDA, "
       "and unit-tested. A packet (t, b) belongs to block t / 1024, slot (t mod 1024) × 6 + b. Its rules:")
     B("up to 4 blocks may be open at once, to tolerate slightly out-of-order arrival;",
@@ -484,8 +543,16 @@ def content():
       "After a re-sync, block numbers restart and would otherwise collide with blocks still being sealed.")
 
     H2("The scatter kernel")
-    FIGURE("f09_scatter", "The scatter kernel transposes 32 packets × 32 channels through shared memory, so that both "
-                          "the reads and the writes are coalesced.")
+    BG("GPU execution: threads, warps, blocks, shared memory", "A GPU kernel runs thousands of threads. They execute "
+       "in groups of 32 called <i>warps</i>, which issue each instruction together; a warp's memory accesses are fast "
+       "when its 32 threads touch neighbouring addresses, because the hardware then <i>coalesces</i> them into a few "
+       "wide transactions (32–128 bytes). Threads are organised in <i>blocks</i> (up to 1024 threads) that run on one "
+       "streaming multiprocessor and can share a small, very fast on-chip memory, <i>shared memory</i>. Threads of a "
+       "block wait for each other at a <i>barrier</i> (__syncthreads); threads of one warp can also exchange register "
+       "values directly with <i>shuffle</i> instructions, without shared memory or barriers.")
+    FIGURE("f09_scatter", "The scatter kernel. One channel (highlighted) is a column of the packets as they arrive, and "
+                          "must become a row of the ring. A tile of 32 packets × 32 channels is loaded row-wise and "
+                          "stored column-wise through shared memory.")
     P("The scatter turns packet order (one packet = one time sample of 1024 channels) into ring order (one row = 1024 "
       "time samples of one channel). Done naively, each thread would write 4 bytes to a different row, which wastes "
       "most of each memory transaction. The kernel instead loads a tile of 32 packets × 32 channels into shared memory "
@@ -493,11 +560,13 @@ def content():
       "consecutive time samples of one channel row, a contiguous 128-byte run. For the tile's packets to be "
       "consecutive in time, the CPU first sorts each burst's jobs by channel group (a counting sort, negligible "
       "cost). Missing packets go through the same kernel with a null source and are written as zeros. The tiled "
-      "kernel measured 1.4× faster than the naive one and runs at about 200 GB/s, i.e. memory-bound.")
+      "kernel measured 1.4× faster than the naive one, takes about 83 µs per burst of 1024 packets, and runs at about "
+      "200 GB/s: it is limited by memory bandwidth, as it should be. The shared-memory tile is padded by one column "
+      "(32 × 33 entries) so that column-wise accesses do not all hit the same memory bank.")
 
     H2("The ring and its protocol")
-    FIGURE("f10_ring", "The ring: a small control block in POSIX shared memory, and the voltage blocks in a CUDA VMM "
-                       "allocation shared with readers through a file descriptor.")
+    FIGURE("f10_ring", "The ring of one link. The writer (red) fills slots in turn; head marks the newest published "
+                       "block; each reader (teal) follows at its own position.")
     P("Each link has one ring with two parts:")
     B("<b>Control plane</b>: " + mono("/dev/shm/lft3-&lt;stream&gt;") + ", 560 kB with a fixed binary layout. It "
       "holds the layout, observation id, configuration hash and software version; the publication head and a "
@@ -514,21 +583,48 @@ def content():
       "row per channel across the whole ring, so that any FFT length would read contiguously. It was measured and "
       "rejected: the scatter's writes to 12 288 far-apart rows thrashed the GPU's address translation, and throughput "
       "fell to 6 GB/s, below the required 7.5 GB/s.")
+    BG("TLB", "Programs use virtual addresses; the hardware translates them to physical memory one page (4 KiB or "
+       "2 MiB) at a time and caches recent translations in a <i>translation lookaside buffer</i> (TLB). A kernel that "
+       "touches thousands of pages at once, as the rejected layout did, misses the TLB constantly, and every miss costs "
+       "a walk through the page tables. Large pages and compact access patterns avoid it.")
+    BG("CUDA VMM and sharing GPU memory", "CUDA's virtual memory management API separates allocating physical GPU "
+       "memory (cuMemCreate) from mapping it at an address (cuMemMap). An allocation made this way can be exported as "
+       "an ordinary Linux file descriptor and sent to another process over a unix socket; that process imports it and "
+       "maps the same memory into its own address space, here read-only. Measured on the Spark, this keeps the full "
+       "237 GB/s in the other process, whereas host memory registered with CUDA reads at 172 GB/s.")
     H3("Publication and reading (a seqlock)")
-    P("The writer marks a slot invalid <i>before</i> any GPU write into it. It publishes the block only after the "
-      "kernels have completed: metadata, then the slot's sequence number, then the seq→slot entry, then the head, "
-      "then a futex wake-up for waiting readers. A reader waits for the head to pass the block it wants, checks the "
-      "slot's sequence number, does its GPU work, and checks the sequence number again afterwards. If it changed, the "
-      "writer reused the slot during the read: the result is discarded and counted as an overrun. Readers that fall "
-      "more than (S − 8) blocks behind jump ahead and count what they skipped.")
+    BG("seqlock and futex", "A <i>seqlock</i> lets one writer update data that many readers read, without readers ever "
+       "blocking the writer. Each data item carries a sequence number; a reader notes it, reads, then checks it is "
+       "unchanged. If it changed, the writer was there meanwhile and the reader discards what it read. A <i>futex</i> "
+       "is a Linux primitive that lets threads, even in different processes, sleep on a word in shared memory until "
+       "another thread changes it and wakes them, so idle readers use no CPU.")
+    P("Every published block gets a sequence number n = 0, 1, 2, …; the control block maps n to the slot that holds "
+      "it. The writer (capture) never waits for readers:")
+    NL("Before any GPU write into a slot, mark the slot invalid (its sequence number becomes a reserved value).",
+       "Run the scatter and zero-fill kernels into it and record a CUDA event after them.",
+       "When the event has completed, write the slot's metadata, set its sequence number to n, record slot(n), "
+       "advance the head to n + 1, and wake all waiting readers.")
+    P("A reader, in any process, follows the head:")
+    NL("Wait until the head passes n (sleeping on the futex). If n is older than head − (S − 8), it has fallen too far "
+       "behind: jump ahead and count the skipped blocks as overruns.",
+       "Look up slot(n), check its sequence number is n, and copy the metadata.",
+       "Run its GPU work on the block and wait for it to finish.",
+       "Check the sequence number again. If it changed, the writer reused the slot during the read: discard the "
+       "result and count an overrun.",
+       "Record n + 1 as its cursor, with its lag and a heartbeat; status tools read these.")
     P("For synthetic and file sources only, readers can be <i>lossless</i>. The writer then waits until every "
       "lossless reader with a live heartbeat has moved at least 8 slots beyond a slot before reusing it. Tests and "
       "benchmarks use this to process every block. The 8-slot margin came out of a parity test, which caught a bug "
       "when the margin was 0.")
 
     H2("The fine spectrometer")
-    FIGURE("f11_finespec", "Fine spectrometer: per block, beam and coarse channel, eight 128-point FFTs are detected "
-                           "and summed; 149 blocks make one 1-second spectrum.")
+    BG("why a second FFT", "Each 152.6 kHz board channel is itself a time series of complex samples. Fourier "
+       "transforming N consecutive samples of one channel splits it into N finer channels of 152.6 kHz / N; with N = 128 "
+       "that is 1.19 kHz. Squaring the magnitudes gives power, and adding many such spectra ('integration') reduces the "
+       "noise fluctuations so faint steady signals stand out. Narrowband technosignature searches need resolutions of "
+       "~1 Hz, i.e. N ≈ 131 072, which is a future mode (§10).")
+    FIGURE("f11_finespec", "Fine spectrometer for one coarse channel of one beam and one block: eight 128-point "
+                           "segments are transformed, detected and summed; 149 blocks make a one-second spectrum.")
     P("For every block, " + mono("lft3-spectrometer") + " runs one fused kernel over all (coarse channel, beam) pairs. "
       "Each row of 1024 dual-polarisation samples is cut into eight segments of 128. Each segment is Fourier "
       "transformed for both polarisations, |X|² + |Y|² (Stokes I) is formed, and the eight results are summed in "
@@ -536,17 +632,28 @@ def content():
       "the 128 fine bins. The voltages are read exactly once, and nothing larger than the accumulator is written. "
       "That fusion is what makes it fast: separate FFT, detect and integrate passes (as in CyberEther's own blocks) "
       "move about 6× more memory and ran at only 0.59× real time.")
+    BG("Stokes I and fftshift", "A beam has two orthogonal polarisations, X and Y. The total intensity, Stokes I, is "
+       "|X|² + |Y|², independent of how the signal is polarised. An FFT returns bin 0 (zero offset) first, then the "
+       "positive offsets, then the negative ones; <i>fftshift</i> rotates the bins so that the most negative offset comes "
+       "first and frequency increases monotonically across each coarse channel.")
     H3("The warp FFT")
-    FIGURE("f12_warp_fft", "One warp computes a 128-point FFT entirely in registers: a 4-point DFT per lane, a "
-                           "twiddle, and a 32-point FFT across lanes with shuffles.")
+    FIGURE("f12_warp_fft", "Warp FFT for N = 128: each of the 32 lanes holds 4 samples; a small transform in "
+                           "registers is followed by a 32-point FFT across the lanes (8 lanes and 3 of 5 stages drawn).")
     P("The first kernel did the FFT in shared memory with 64 threads per (channel, beam). Profiling showed it limited "
       "by its 56 barriers per block of data, not by arithmetic. A twiddle table was tried and was not faster. The "
-      "current kernel gives each FFT to one warp of 32 threads and never synchronises. For N = 128 = 4 × 32, lane j "
-      "loads the four samples j, j+32, j+64 and j+96 (each warp load is 128 contiguous bytes). Each lane does a "
-      "4-point DFT in registers and multiplies by the twiddle W<sub>128</sub><super>jq</super>. Then, for each of "
-      "the four outputs, the lanes perform a 32-point FFT among themselves: five radix-2 stages in which each lane "
-      "exchanges values with lane j xor h using " + mono("__shfl_xor_sync") + ". Lane l ends up holding bins q + "
-      "4·bitrev(l), and detection and summation happen in registers. The same scheme covers 64 and 256 points. The "
+      "current kernel gives each FFT to one warp of 32 threads and never synchronises. It uses the classic "
+      "Cooley–Tukey idea that an N-point FFT with N = R × 32 can be done as R-point transforms followed by 32-point "
+      "transforms, with a 'twiddle' phase factor in between. For N = 128 (R = 4):")
+    NL("Lane j (j = 0 … 31) loads samples j, j+32, j+64 and j+96 of both polarisations. Each load by the warp covers "
+       "128 contiguous bytes, so memory access is coalesced.",
+       "Each lane computes a 4-point DFT of its own four samples, entirely in registers.",
+       "It multiplies output q by the twiddle factor e<super>−2πi·jq/128</super>.",
+       "For each q, the 32 lanes then form a 32-point FFT among themselves: five radix-2 stages, in each of which a lane "
+       "exchanges its value with lane j xor h (h = 16, 8, 4, 2, 1) using the " + mono("__shfl_xor_sync") +
+       " instruction, adds or subtracts, and multiplies by a twiddle.",
+       "Lane l now holds the frequency bins q + 4·bitrev(l). It forms |X|² + |Y|², sums the 8 segments of the block in "
+       "registers, and adds the 4 fftshifted bins to the accumulator.")
+    P("The same scheme covers 64 and 256 points (R = 2 and 8); other lengths use the shared-memory kernel. The warp "
       "kernel takes 0.30 ms per 6.71 ms block for both beams (previously 0.50 ms), is close to memory-bound, and "
       "matches a reference DFT to better than 10<super>−4</super>.")
     H3("Time grid, missing data and the coarse product")
@@ -557,16 +664,16 @@ def content():
       "plus 6144 for every block the capture skipped or the reader lost. Spectra are written regardless, and the count "
       "is what a later mask will use. A gap of whole windows, or a board re-sync, starts new files.",
       "<b>The coarse quick-look product costs nothing extra</b>: by Parseval's theorem, the power in a board channel "
-      "equals the sum of its 128 fine bins divided by 128. The writer thread computes it on the CPU from each fine "
-      "spectrum. It agrees with a direct computation from the voltages to 2.6 × 10<super>−6</super>. A separate "
+      "equals the sum of its 128 fine bins divided by 128 (Parseval's theorem: an FFT preserves total energy, up to a "
+      "factor N). The writer thread computes it on the CPU from each fine spectrum. It agrees with a direct computation from the voltages to 2.6 × 10<super>−6</super>. A separate "
       "coarse-mode reader is only needed for a faster cadence (e.g. 0.1 s).",
       "<b>Frequency axis</b>: fch1 and foff come from the exact NCO in the configuration; the header's whole-MHz "
       "value is only a fallback. <b>Time</b>: the UNIX time of t = 0 is estimated from the first packet's arrival "
       "(~ms accuracy) until the firmware provides a PPS-aligned sync.")
 
     H2("Triggered raw-voltage dumps")
-    FIGURE("f13_dump", "A dump copies the window around the trigger time out of the ring: the part before the "
-                       "trigger is already there, the rest is copied as it arrives.")
+    FIGURE("f13_dump", "A dump copies a window around the trigger time out of the ring: the part before the trigger "
+                       "(teal) is already there, the part after (red) is copied as it arrives.")
     P(mono("lft3-pipeline trigger") + " sends a command to each link's " + mono("lft3-dump") + " over a unix socket: "
       "a UNIX time plus seconds before and after (default 0.5 + 0.5). The dump process converts the time to block "
       "numbers using the capture's time base. It copies every block of the window that is still in the ring, and the "
@@ -575,6 +682,10 @@ def content():
       "of 80-character cards (OBSNCHAN, NPOL = 4, NBITS = 8, TBIN, OBSFREQ, OBSBW, PKTIDX = t0, …). The window has to "
       "be copied first because NVMe cannot absorb 7.5 GB/s, and the ring only holds ~2 s. Live, a 1 s window "
       "(7.5 GB) was collected in 0.5–0.7 s and written in 2.8 s.")
+    BG("GUPPI RAW", "The raw-voltage file format of the Green Bank (GUPPI) and Breakthrough Listen backends, read by "
+       "rawspec, blimpy and hyperseti. A file is a sequence of blocks; each block has a plain-text header of 80-character "
+       "'KEY = value' cards (as in FITS) ending with END, followed by the samples ordered by channel, then time, then "
+       "polarisation, as signed 8-bit real and imaginary parts.")
 
     H2("Products")
     TABLE([["Product", "Where", "Content"],
@@ -592,14 +703,18 @@ def content():
            ["Run records", "&lt;data&gt;/runs/&lt;UTC&gt;_&lt;board&gt;_&lt;source&gt;/",
             "one log per process, plan.txt, status.jsonl, nic-&lt;link&gt;.csv"]],
           [0.16, 0.34, 0.50], "Products. Beam numbers N include the link's beam offset (link0: 0, 1; link1: 2, 3).")
+    BG("FBH5", "Filterbank data in HDF5, the Breakthrough Listen format for spectra: a 3-D dataset /data [time, "
+       "polarisation, frequency] with the SIGPROC header values (fch1 = first channel frequency, foff = channel spacing, "
+       "tsamp = time per spectrum, tstart = start time as MJD) as attributes. HDF5 stores the dataset in independently "
+       "compressed <i>chunks</i>, so a reader can decode just the part it needs.")
     P("FBH5 files open with blimpy, turboSETI and hyperseti as well as the project's own tools. GUPPI RAW opens with "
       "rawspec and blimpy. Files rotate every 3600 spectra, and " + mono("/lft3_timestamp") + " continues exactly "
       "across rotations, so tools can chain them into one run.")
 
     # ------------------------------------------------------------------------------------------------ 7
     H1("The viewer")
-    FIGURE("f16_viewer", "lft3-view: all data work happens in C++ on the Spark; the browser receives only a "
-                         "screen-sized tile.")
+    FIGURE("f16_viewer", "lft3-view: files are read and reduced on the Spark; the browser receives only the "
+                         "screen-sized tile it draws.")
     P("A one-hour full-band file holds 3600 spectra × 786 432 channels, about 11 GB before compression. "
       + mono("lft3-view") + " is a C++ HTTP server on the Spark with a single-page browser client. The browser never "
       "receives raw data, only the tile it is about to draw:")
@@ -624,6 +739,15 @@ def content():
       "CUDA 13, hyperseti pinned to a tested commit). Files that are still being written are never opened: a file "
       "counts as finished once the next file of the same beam exists or it has been idle for two minutes. The "
       "defaults are adapted to 1.19 kHz channels:")
+    BG("drift rate and dedoppler search", "A transmitter on a rotating planet, received by a rotating Earth, is "
+       "Doppler shifted by an amount that changes slowly with time, so a narrowband signal appears as a slanted line "
+       "in a time–frequency plot. Its slope, in Hz/s, is the <i>drift rate</i>. A <i>dedoppler</i> search sums the "
+       "power along straight lines of many trial slopes and reports lines whose summed power stands out from the "
+       "noise by more than a threshold signal-to-noise ratio (S/N). Terrestrial interference usually has zero drift "
+       "or an erratic one.")
+    BG("spectral kurtosis", "A statistic that compares the variance of a channel's power with what pure Gaussian noise "
+       "would give for the number of samples summed. Impulsive or switching interference makes it deviate, so it is a "
+       "cheap way to flag RFI. It only works if the number of summed samples is known exactly.")
     B("no spectral-kurtosis flagging (hyperseti would otherwise flag 100 % of the data, because its assumed "
       "accumulation count does not include the sum of two polarisations);",
       "drift rates up to 200 Hz/s: at 10 Hz/s a signal would not cross even one 1.19 kHz channel within a file, and "
@@ -672,6 +796,12 @@ def content():
       "link holds about 23 GB: the 15 GB ring, the 7.5 GB pinned dump window and 0.5 GB of DAQIRI buffers.")
     FIGURE("c4_memory", "Estimated memory traffic per link and for several links, against the usable bandwidth of the "
                         "shared LPDDR5x.", width=13.5 * cm)
+    BG("why memory bandwidth, not GPU load, is the limit", "On the Spark the NIC, CPU and GPU share one 273 GB/s memory. "
+       "Every packet byte is written by the NIC, read and written again by the scatter, read by each reader, and "
+       "possibly copied by a dump; about 30 GB/s per link in total. A kernel that waits for memory still shows as "
+       "'busy' in GPU utilisation, so utilisation rises faster than the useful work as links are added. The NIC is "
+       "the most fragile participant: if its DMA writes cannot get to memory fast enough, its small on-chip buffer "
+       "overflows and packets are dropped, whatever the GPU is doing.")
     H2("How many links fit on one Spark")
     FIGURE("c2_capacity", "Capacity test: N simultaneous real-time synthetic streams, each with a recording "
                           "spectrometer, plus N × 7.6 GB/s of memory writes standing in for the NICs' DMA.",

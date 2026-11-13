@@ -6,6 +6,7 @@ Each figure is drawn with matplotlib patches and saved as SVG (text kept as text
   board / FPGA  orange   network  grey   host CPU  blue   GPU  green   storage  purple   readers  teal
 Numbers in the figures are the measured / configured values documented in docs/runtime.md.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -61,6 +62,9 @@ def save(f, out, name):
     """Vector SVG (embedded in the PDF as drawings by build.py; usable in other documents as is)."""
     path = out / f"{name}.svg"
     f.savefig(path, bbox_inches="tight", pad_inches=0.05)
+    preview = os.environ.get("LFT3_FIG_PREVIEW")   # optional PNG previews for reviewing layouts
+    if preview:
+        f.savefig(Path(preview) / f"{name}.png", dpi=110, bbox_inches="tight", pad_inches=0.05)
     plt.close(f)
     # keep spaces in labels as drawn (SVG collapses whitespace unless told otherwise)
     svg = path.read_text()
@@ -70,476 +74,393 @@ def save(f, out, name):
 # ------------------------------------------------------------------------------------------------ figures
 
 def system_overview(out):
-    f, ax = fig(11, 6.4)
-    group(ax, 1, 34, 31, 28, "RFSoC 4x2 board (×5 in full system)", "board")
-    box(ax, 2.5, 50.5, 28, 7, "4 ADC inputs · 5 GSPS · NCO mix\n+ decimate → 1250 MSPS complex", "board", fs=7.6)
-    box(ax, 2.5, 42.5, 28, 6.5, "PFB 8192 ch, 8 taps → keep 6144\nrequantise to 8-bit I + 8-bit Q", "board", fs=7.6)
-    box(ax, 2.5, 35.5, 13, 5.5, "DDR ring\n4 GiB, 4-bit", "board", fs=7.6)
-    box(ax, 17.5, 35.5, 13, 5.5, "packetizer\n60.8 Gb/s", "board", fs=7.6)
-    arrow(ax, 15.5, 38.2, 17.5, 38.2)
-    arrow(ax, 16.5, 50.5, 16.5, 49)
-    arrow(ax, 9, 42.5, 9, 41)
-    arrow(ax, 24, 42.5, 24, 41)
-    group(ax, 36, 3, 73, 59, "NVIDIA DGX Spark (GB10)", "plain")
-    box(ax, 38, 46, 15, 10, "ConnectX-7\n2 × QSFP\n(link0, link1)", "net", fs=7.8)
-    ax.text(38, 44.3, "UDP 60000: 915 527 pkt/s\nUDP 40000: DDR dumps", fontsize=6.8, va="top")
-    box(ax, 57, 46, 17, 10, "lft3-capture\n(one per link)\nDAQIRI · assembler\nscatter kernel", "cpu", fs=7.6)
-    box(ax, 78, 43, 29, 14, "voltage ring per link\nGPU memory, last ~2 s\n[beam][channel][t][pol] int8\n"
-                            "50 MB blocks of 6.71 ms", "gpu", fs=7.8)
-    box(ax, 57, 26, 15, 10, "lft3-spectrometer\n128-pt FFT, Stokes I\n1 s integrations", "reader", fs=7.2)
-    box(ax, 74, 26, 15, 10, "lft3-dump\ntrigger → window\nof raw voltages", "reader", fs=7.2)
-    box(ax, 91, 26, 16, 10, "your reader\n(C++, Python/CuPy)\ne.g. a live search", "reader", fs=7.2)
-    box(ax, 38, 6, 17, 11, "FBH5 spectra\nfine 1.19 kHz\ncoarse 152.6 kHz", "store", fs=7.4)
-    box(ax, 57, 6, 15, 11, "GUPPI RAW\nraw-voltage\ndumps", "store", fs=7.4)
-    box(ax, 74, 6, 15, 11, "hits CSV\nlft3-search\n(hyperseti)\nreads FBH5", "store", fs=7.2)
-    box(ax, 91, 6, 16, 11, "lft3-view\nbrowser viewer\nreads FBH5", "reader", fs=7.4)
-    arrow(ax, 30.5, 39, 38, 49, lw=2.2)
-    ax.text(31.2, 44.5, "100\nGbE", fontsize=7, color="#333")
-    arrow(ax, 53, 51, 57, 51, lw=2)
-    arrow(ax, 74, 51, 78, 51, lw=2)
-    arrow(ax, 84, 43, 66, 36)
-    arrow(ax, 89, 43, 81.5, 36)
-    arrow(ax, 97, 43, 99, 36)
-    arrow(ax, 61, 26, 48, 17)
-    arrow(ax, 81.5, 26, 66, 17)
-    group(ax, 1, 3, 31, 25, "Control and monitoring", "cpu")
-    box(ax, 2.5, 15.5, 28, 7, "lft3-board: program, clocks, NCO,\nsync, trigger, health checks", "cpu", fs=7.4)
-    box(ax, 2.5, 4.5, 28, 9, "lft3-pipeline: run, status,\ntrigger, stop, metrics\nconfig/*.yaml: source of truth", "cpu",
-        fs=7.4)
-    arrow(ax, 27, 22.5, 27, 34, lw=1.4)
-    ax.text(17, 30, "1 GbE katcp\n192.168.2.100", fontsize=6.8, va="center", ha="center")
-    arrow(ax, 30.5, 9, 36, 9, ls=":", lw=1.1)
-    ax.text(31, 10, "runs", fontsize=6.6)
+    f, ax = fig(11, 6.2)
+    group(ax, 1, 33, 29, 27, "RFSoC board", "board")
+    box(ax, 3, 49, 25, 6, "ADCs + down-conversion", "board")
+    box(ax, 3, 41.5, 25, 6, "polyphase filterbank", "board")
+    box(ax, 3, 34.5, 11.5, 5.5, "DDR ring", "board")
+    box(ax, 16.5, 34.5, 11.5, 5.5, "packetizer", "board")
+    arrow(ax, 15.5, 49, 15.5, 47.5)
+    arrow(ax, 22, 41.5, 22, 40)
+    arrow(ax, 14.5, 37.2, 16.5, 37.2)
+    group(ax, 1, 3, 29, 23, "Host control", "cpu")
+    box(ax, 3, 14, 25, 6, "lft3-board", "cpu")
+    box(ax, 3, 5, 25, 6, "lft3-pipeline", "cpu")
+    arrow(ax, 15.5, 20, 15.5, 33, lw=1.2)
+    ax.text(16.5, 28, "1 GbE control", fontsize=7.5, color="#555")
+    group(ax, 35, 3, 74, 57, "DGX Spark", "plain")
+    box(ax, 38, 44, 15, 9, "NIC", "net")
+    box(ax, 58, 44, 18, 9, "lft3-capture", "cpu")
+    box(ax, 81, 42, 25, 13, "voltage ring\n(GPU memory)", "gpu")
+    arrow(ax, 28, 37.2, 38, 47, lw=2.4)
+    ax.text(30.5, 44, "100 GbE", fontsize=7.5, color="#555", rotation=44)
+    arrow(ax, 53, 48.5, 58, 48.5, lw=2)
+    arrow(ax, 76, 48.5, 81, 48.5, lw=2)
+    readers = [("spectrometer", 52), ("dump", 70.5), ("other readers", 89)]
+    for name, x in readers:
+        box(ax, x, 26, 16, 7, name, "reader")
+        arrow(ax, 93.5, 42, x + 8, 33)
+    box(ax, 40, 7, 15, 9, "FBH5\nspectra", "store")
+    box(ax, 59, 7, 15, 9, "GUPPI RAW\ndumps", "store")
+    box(ax, 78, 7, 13, 9, "search\nhits", "store")
+    box(ax, 94, 7, 13, 9, "viewer", "reader")
+    arrow(ax, 60, 26, 48, 16)
+    arrow(ax, 78.5, 26, 67, 16)
+    arrow(ax, 28, 8, 35, 8, ls=":", lw=1)
     save(f, out, "f01_system")
 
+
 def signal_chain(out):
-    f, ax = fig(11, 2.9)
-    steps = [("RF in\n1.56–2.5\nGHz", "net"), ("ADC\n5 GSPS real\n4 inputs", "board"),
-             ("down-\nconvert\nNCO −2031.25\nMHz", "board"), ("decimate\n×4 → 1250\nMSPS\ncomplex", "board"),
-             ("PFB\n8192 pt\n8 taps\n152.6 kHz", "board"), ("keep\n6144 ch\n937.5 MHz", "board"),
-             ("requantise\n8-bit I +\n8-bit Q\n(ch_lsb)", "board"), ("packetizer\n6 × 1024 ch\nper\nspectrum", "board"),
-             ("100 GbE\n60.8 Gb/s", "net")]
-    x = 1
+    f, ax = fig(11, 2.4)
+    steps = [("ADC\n5 GSPS", "board"), ("mix with\nNCO", "board"), ("decimate\n× 4", "board"), ("PFB\n8192 ch", "board"),
+             ("keep\n6144 ch", "board"), ("requantise\n8 + 8 bit", "board"), ("packetize", "board"), ("100 GbE", "net")]
+    x = 6
+    ax.text(1, 17, "RF", fontsize=8.5, va="center")
     for i, (t, k) in enumerate(steps):
-        box(ax, x, 12, 10.5, 13, t, k, fs=7.2)
-        if i:
-            arrow(ax, x - 1.6, 18.5, x, 18.5)
-        x += 12.1
-    box(ax, 37.3, 1, 30, 7.5, "DDR4 ring: 4-bit I/Q, 5 GB/s, 4 GiB = 0.86 s;\nread out through the packetizer on trigger",
-        "board", fs=7.2)
-    arrow(ax, 42, 12, 42, 8.5, ls="--")
-    box(ax, 70, 1, 38, 7.5, "one spectrum per input every 6.5536 µs (152 587.89 /s);\nt counts spectra since the last sync",
-        "plain", fs=7.2)
+        box(ax, x, 12, 10.5, 10, t, k)
+        arrow(ax, x - 2.4 if i else 3.5, 17, x, 17)
+        x += 12.9
+    box(ax, 57, 1, 22, 6.5, "DDR ring (4-bit, 0.86 s)", "board", fs=8)
+    arrow(ax, 32, 12, 59, 7.5, ls="--", lw=1)
+    arrow(ax, 79, 4.2, 88, 12, ls="--", lw=1)
+    ax.text(82.5, 5, "on trigger", fontsize=7.5, color="#555")
     save(f, out, "f02_signal_chain")
 
+
 def packet_layout(out):
-    f, ax = fig(11, 5.6)
-    ax.text(1, 54, "Channel packet (UDP payload 8256 B; Ethernet frame 8298 B, MTU 9000)", fontsize=10,
-            fontweight="bold")
-    # header words
-    y = 40
-    words = [("word 0", [("t: spectrum counter (58 bits)", 58), ("b (3)", 3), ("fid (3)", 3)]),
-             ("word 1", [("nco0 (int32, whole MHz)", 32), ("nco1", 32)]),
-             ("word 2", [("nco2", 32), ("nco3", 32)]),
-             ("word 3", [("pfb_lsb0 (16)", 16), ("pfb_lsb1", 16), ("pfb_lsb2", 16), ("pfb_lsb3", 16)])]
+    f, ax = fig(11, 4.6)
     W = 88
-    for i, (name, fields) in enumerate(words):
-        yy = y - i * 4.6
-        ax.text(1, yy + 1.8, name, fontsize=7.5, va="center")
-        x = 9
+    words = [("t  (58 bits)", 58), ("b", 3), ("fid", 3)], [("nco0", 32), ("nco1", 32)], [("nco2", 32), ("nco3", 32)], \
+        [("pfb_lsb0", 16), ("pfb_lsb1", 16), ("pfb_lsb2", 16), ("pfb_lsb3", 16)]
+    ax.text(1, 43, "header", fontsize=9, fontweight="bold")
+    for i, fields in enumerate(words):
+        yy = 36 - i * 4.4
+        ax.text(1, yy + 1.7, f"word {i}", fontsize=7.5, va="center", color="#555")
+        x = 10
         for txt, bits in fields:
             w = W * bits / 64
-            box(ax, x, yy, w, 3.6, txt, "cpu", fs=7, rad=0.2, lw=0.8)
+            box(ax, x, yy, w, 3.5, txt, "cpu", fs=7.5, rad=0.2, lw=0.8)
             x += w
-    ax.text(9, 44.6, "header: 8 × 64-bit words, big-endian (words 4–7 unused); MSB on the left", fontsize=7.5)
-    ax.text(98.5, 30, "64 B", fontsize=7.5, va="center")
-    # payload
-    yp = 12
-    ax.text(1, yp + 9.5, "payload: 1024 channels × 8 B = 8192 B", fontsize=8, fontweight="bold")
-    for i in range(6):
-        box(ax, 9 + i * 12, yp + 2, 11.4, 5, f"ch {i}" if i < 4 else ("…" if i == 4 else "ch 1023"), "gpu", fs=7.5,
-            rad=0.2, lw=0.8)
-    ax.text(83, yp + 4.5, "channel k = 1024·b + i", fontsize=7.5, va="center")
-    # zoom of one channel
-    zx = 9
-    labels = ["I in0", "Q in0", "I in1", "Q in1", "I in2", "Q in2", "I in3", "Q in3"]
+    ax.text(10, 40.5, "bit 63", fontsize=7, color="#555")
+    ax.text(98, 40.5, "bit 0", fontsize=7, color="#555", ha="right")
+    ax.text(1, 17, "payload", fontsize=9, fontweight="bold")
+    labels = ["ch 0", "ch 1", "ch 2", "…", "ch 1023"]
     for i, lab in enumerate(labels):
-        box(ax, zx + i * 9.2, 1, 8.8, 4, lab, "gpu" if i // 2 % 2 == 0 else "mem", fs=7, rad=0.2, lw=0.8)
-    arrow(ax, 12, yp + 2, 20, 5.2, style="-", ls=":", color="#777")
-    ax.text(85, 3, "1 byte each, int8\ninput 0 first, I before Q\ninputs 0,1 = beam 0 X,Y\ninputs 2,3 = beam 1 X,Y",
-            fontsize=7.2, va="center")
+        box(ax, 10 + i * 17.6, 11, 17, 4.2, lab, "gpu", fs=7.5, rad=0.2, lw=0.8)
+    parts = ["I0", "Q0", "I1", "Q1", "I2", "Q2", "I3", "Q3"]
+    for i, lab in enumerate(parts):
+        box(ax, 10 + i * 6.5, 2, 6.2, 4, lab, "gpu" if i < 4 else "mem", fs=7.5, rad=0.2, lw=0.8)
+    ax.plot([10, 10], [6, 11], color="#888", lw=0.8, ls=":")
+    ax.plot([27, 62], [11, 6], color="#888", lw=0.8, ls=":")
+    ax.text(23, 0.2, "beam 0 (X, Y)", fontsize=7.5, ha="center", va="top", color="#2e8b3a")
+    ax.text(49, 0.2, "beam 1 (X, Y)", fontsize=7.5, ha="center", va="top", color="#a08800")
     save(f, out, "f03_packet")
 
 
 def freq_map(out):
-    f, ax = fig(11, 3.2)
-    ax.text(1, 29.5, "FPGA PFB bins (8192)", fontsize=8)
-    box(ax, 1, 22, 26, 5, "0 … 3071", "board", fs=8, rad=0.2)
-    box(ax, 28, 22, 22, 5, "3072 … 5119 (discarded)", "net", fs=8, rad=0.2)
-    box(ax, 51, 22, 26, 5, "5120 … 8191", "board", fs=8, rad=0.2)
-    ax.text(1, 16, "channel index k in the packets (6144)", fontsize=8)
-    box(ax, 1, 8.5, 38, 5, "k = 0 … 3071  (bindex b = 0, 1, 2)\n= bins 5120 … 8191 (negative offsets)", "gpu",
-        fs=7.5, rad=0.2)
-    box(ax, 40, 8.5, 38, 5, "k = 3072 … 6143  (b = 3, 4, 5)\n= bins 0 … 3071 (positive offsets)", "gpu", fs=7.5,
-        rad=0.2)
-    arrow(ax, 64, 22, 20, 13.5, color="#c8641e")
-    arrow(ax, 14, 22, 59, 13.5, color="#c8641e")
-    box(ax, 80, 6, 29, 22, "RF(k) = −NCO + (k − 3072)\n         × 152.587890625 kHz\n\nNCO = −2031.25 MHz:\n"
-                           "k = 0   → 1562.50 MHz\nk = 3072 → 2031.25 MHz\nk = 6143 → 2499.85 MHz\n\n"
-                           "ascending k = ascending RF\n(confirmed by 125 MHz spurs\nand a 1800 MHz test tone)",
-        "plain", fs=7.4, align="left", va="top")
+    f, ax = fig(11, 3.1)
+    ax.text(1, 27.5, "PFB bins", fontsize=8, color="#555")
+    box(ax, 12, 23, 30, 5, "0 … 3071", "board")
+    box(ax, 43, 23, 24, 5, "3072 … 5119  (dropped)", "net", fs=7.8)
+    box(ax, 68, 23, 30, 5, "5120 … 8191", "board")
+    ax.text(1, 11.5, "channel k", fontsize=8, color="#555")
+    box(ax, 12, 9, 43, 5, "k = 0 … 3071   (b = 0, 1, 2)", "gpu")
+    box(ax, 55, 9, 43, 5, "k = 3072 … 6143   (b = 3, 4, 5)", "gpu")
+    arrow(ax, 83, 23, 33, 14, color="#c8641e", lw=1.2)
+    arrow(ax, 27, 23, 76, 14, color="#c8641e", lw=1.2)
+    ax.plot([12, 98], [5.5, 5.5], color="#333", lw=0.9)
+    for x, lab in ((12, "1562.5"), (55, "2031.25"), (98, "2499.8")):
+        ax.plot([x, x], [5, 6], color="#333", lw=0.9)
+        ax.text(x, 2.6, lab, fontsize=7.5, ha="center")
+    ax.text(103, 4.4, "MHz", fontsize=7.5, va="center")
     save(f, out, "f04_freq_map")
 
 
 def spark_hw(out):
-    f, ax = fig(11, 6)
-    group(ax, 1, 2, 108, 56, "DGX Spark (GB10 superchip)", "plain")
-    group(ax, 3, 30, 50, 25, "Arm CPU: 20 cores", "cpu")
-    ax.text(5, 51.2, "red = link0 capture: 5 DAQIRI master · 6 RX worker (100 %) · 7 processing", fontsize=6.6,
-            color="#b03a2e")
+    f, ax = fig(11, 5.2)
+    group(ax, 1, 25, 52, 24, "Arm CPU (20 cores)", "cpu")
     for i, c in enumerate([5, 6, 7, 8, 9, 15, 16, 17, 18, 19]):
-        k = "warn" if c in (5, 6, 7) else "cpu"
-        box(ax, 5 + (i % 5) * 9.5, 44.5 - (i // 5) * 5.6, 8.5, 4.8, f"X925 {c}", k, fs=7, rad=0.3)
-    ax.text(5, 37.0, "A725 cores (readers, system)", fontsize=6.8)
+        box(ax, 3 + (i % 5) * 9.8, 37.5 - (i // 5) * 5.3, 9, 4.4, f"X925 · {c}", "warn" if c in (5, 6, 7) else "cpu",
+            fs=7.5, rad=0.3)
     for i, c in enumerate([0, 1, 2, 3, 4, 10, 11, 12, 13, 14]):
-        box(ax, 5 + (i % 10) * 4.7, 31.5, 4.4, 4.5, f"{c}", "cpu", fs=6.5, rad=0.2)
-    group(ax, 57, 30, 50, 25, "Blackwell GPU (sm_121, 48 SMs)", "gpu")
-    box(ax, 59, 33, 46, 17, "scatter · fine FFT · coarse power · dump copies\nsearch (hyperseti, CuPy)\n\n"
-                            "integrated GPU: no PCIe copy; it reads and writes\nthe same LPDDR5x as the CPU and the NIC",
-        "gpu", fs=7.8)
-    box(ax, 3, 15, 104, 11, "128 GB LPDDR5x unified memory · 273 GB/s shared by CPU, GPU and NIC DMA\n"
-                            "(measured GPU: 237 GB/s read, 174 GB/s write; registered host memory 172 / 111 GB/s)",
-        "mem", fs=8.5, bold=True)
-    box(ax, 3, 4, 50, 8.5, "ConnectX-7: 2 QSFP ports, each = 2 PCIe Gen5 x4 halves\n"
-                           "link0 → enp1s0f0np0 (0000:01:00.0); link1 → port 2", "net", fs=7.8)
-    box(ax, 57, 4, 24, 8.5, "NVMe 3.7 TB\n~2.7 GB/s writes (dumps)", "store", fs=7.8)
-    box(ax, 84, 4, 23, 8.5, "1 GbE enP7s7\n192.168.2.101 → board\ncontrol (katcp)", "net", fs=7.4)
-    for x in (28, 69, 95):
-        arrow(ax, x, 12.5, x, 15, style="<|-|>")
-    arrow(ax, 28, 26, 28, 30, style="<|-|>")
-    arrow(ax, 82, 26, 82, 30, style="<|-|>")
+        box(ax, 3 + i * 4.9, 26.5, 4.5, 4, f"{c}", "cpu", fs=7, rad=0.2)
+    ax.add_patch(Rectangle((33, 45.6), 1.6, 1.4, fc=C["warn"][0], ec=C["warn"][1]))
+    ax.text(35.2, 46.3, "link0 capture cores", fontsize=7, va="center", color="#b03a2e")
+    group(ax, 57, 25, 52, 24, "Blackwell GPU (48 SMs)", "gpu")
+    box(ax, 60, 29, 46, 13, "no copy to or from host memory:\nreads and writes the same DRAM", "gpu", fs=8)
+    box(ax, 1, 13, 108, 8, "128 GB LPDDR5x unified memory · 273 GB/s, shared by CPU, GPU and NIC", "mem", fs=9,
+        bold=True)
+    box(ax, 1, 1, 46, 8, "ConnectX-7 · 2 × QSFP (100 GbE links)", "net", fs=8)
+    box(ax, 51, 1, 28, 8, "NVMe 3.7 TB", "store", fs=8)
+    box(ax, 83, 1, 26, 8, "1 GbE to boards", "net", fs=8)
+    for x in (24, 65, 96):
+        arrow(ax, x, 9, x, 13, style="<|-|>", lw=1.2)
+    for x in (27, 83):
+        arrow(ax, x, 21, x, 25, style="<|-|>", lw=1.2)
     save(f, out, "f05_spark")
 
 
 def data_movement(out):
-    f, ax = fig(11, 7.4)
-    ax.text(1, 72, "Where one stream's bytes go (per second, full band: 915 527 packets, 7.5 GB of samples)",
-            fontsize=9.5, fontweight="bold")
-    box(ax, 1, 52, 12, 10, "ConnectX-7\nNIC", "net", bold=True)
-    group(ax, 17, 39, 33, 29, "host pinned memory (DAQIRI, 0.5 GB)", "mem", fs=7.8)
-    box(ax, 19, 57, 29, 6, "header segments: 106 B × 64 Ki\n(Ethernet/IP/UDP + LFT3 header)", "cpu", fs=7)
-    box(ax, 19, 49.5, 29, 6, "payload segments: 8192 B × 64 Ki", "gpu", fs=7)
-    box(ax, 19, 41, 29, 6.5, "ScatterJob lists: payload ptr, block ptr,\nt, channel offset (sorted by group)", "cpu",
-        fs=6.8)
-    arrow(ax, 13, 59, 19, 60, fs=7)
-    arrow(ax, 13, 55, 19, 52.5, fs=7)
-    ax.text(13.3, 63.5, "DMA,\nheader/data\nsplit", fontsize=6.6, va="bottom")
-    box(ax, 55, 57, 23, 10, "capture thread (CPU)\nparse header →\nAssembler → block, slot", "cpu", fs=7.2)
-    arrow(ax, 48, 60, 55, 62, fs=6.6)
-    ax.text(48.5, 64, "97 MB/s", fontsize=6.6)
-    arrow(ax, 61, 57, 48, 45.5, fs=6.6)
-    ax.text(56, 50, "jobs", fontsize=6.6)
-    group(ax, 82, 39, 27, 29, "GPU", "gpu", fs=8)
-    box(ax, 84, 46, 23, 12, "scatter kernel\n32 jobs × 32 channels\ntiles, 128-B runs\n≈ 83 µs per burst", "gpu",
-        fs=7)
-    arrow(ax, 48, 52.5, 84, 52.5)
-    ax.text(66, 53.2, "reads payload 7.5 GB/s", fontsize=6.6, ha="center")
-    arrow(ax, 48, 43, 84, 48.5)
-    group(ax, 17, 3, 92, 32, "GPU memory: CUDA VMM allocation = the ring (shared by fd with other processes)", "gpu",
-          fs=7.8)
-    for i in range(9):
+    f, ax = fig(11, 5.8)
+    box(ax, 1, 40, 11, 9, "NIC", "net", bold=True)
+    group(ax, 16, 28, 32, 28, "pinned host memory", "mem", fs=8.5)
+    box(ax, 18, 44, 28, 6, "headers (106 B each)", "cpu")
+    box(ax, 18, 36.5, 28, 6, "payloads (8192 B each)", "gpu")
+    box(ax, 18, 29.5, 28, 5, "job list", "cpu")
+    arrow(ax, 12, 47, 18, 47)
+    arrow(ax, 12, 42, 18, 39.5)
+    box(ax, 54, 43, 18, 9, "capture thread\n(CPU)", "cpu")
+    arrow(ax, 46, 47, 54, 47.5)
+    arrow(ax, 57, 43, 46, 33)
+    group(ax, 78, 28, 31, 28, "GPU", "gpu", fs=8.5)
+    box(ax, 81, 35, 25, 10, "scatter\nkernel", "gpu")
+    arrow(ax, 46, 39.5, 81, 41, "7.5 GB/s", fs=7.5, off=(0, 0.4))
+    arrow(ax, 46, 32, 81, 37.5)
+    group(ax, 16, 1, 93, 23, "the ring (GPU memory)", "gpu", fs=8.5)
+    for i in range(10):
         k = "warn" if i == 6 else "gpu"
-        box(ax, 19 + i * 9.8, 17, 9.2, 8.5, f"slot\n{i if i < 7 else ('…' if i == 7 else 'S−1')}", k, fs=7,
-            rad=0.3)
-    ax.text(19, 27.3, "S = 299 slots × 50.3 MB = 15 GB = 2.0 s; red = slot being written (invalid to readers)",
-            fontsize=7)
-    arrow(ax, 95.5, 46, 82.5, 25.7, fs=6.6)
-    ax.text(91, 36.5, "writes 7.5 GB/s", fontsize=6.6)
-    box(ax, 19, 4.5, 27, 9, "spectrometer kernel\nreads 7.5 GB/s →\naccumulator (2 × 786 432)", "reader", fs=6.9)
-    box(ax, 49, 4.5, 26, 9, "accumulator → host pinned\n6.3 MB per spectrum (1/s)\n→ writer thread → NVMe",
-        "reader", fs=6.9)
-    box(ax, 78, 4.5, 29, 9, "dump: ring → pinned host\n7.5 GB per 1 s window (~0.7 s)\n→ GUPPI RAW on NVMe", "reader",
-        fs=6.9)
-    arrow(ax, 32, 17, 32, 13.5)
-    arrow(ax, 46, 9, 49, 9)
-    arrow(ax, 92, 17, 92, 13.5)
-    ax.text(1, 46, "memory traffic\nper stream\n≈ 30 GB/s:\n\nNIC write 7.5\nscatter read 7.5\nscatter write 7.5\n"
-                   "FFT read 7.5\n\n+ dumps,\nsearches", fontsize=6.9, va="top", color="#a08800")
+        box(ax, 18 + i * 8.8, 10.5, 8, 7, "", k, rad=0.3)
+    arrow(ax, 93.5, 35, 74.5, 17.5, "7.5 GB/s", fs=7.5, off=(4.5, -1))
+    box(ax, 18, 2.5, 25, 5.5, "spectrometer", "reader")
+    box(ax, 82, 2.5, 25, 5.5, "dump", "reader")
+    arrow(ax, 30, 10.5, 30, 8)
+    arrow(ax, 94, 10.5, 94, 8)
     save(f, out, "f06_data_movement")
 
+
 def packet_lifetime(out):
-    f, ax = fig(11, 6.6)
-    lanes = [("NIC", "net"), ("DAQIRI worker\n(core 6)", "cpu"), ("capture thread\n(core 7)", "cpu"),
-             ("GPU", "gpu"), ("ring slot", "gpu"), ("readers", "reader")]
-    ys = [56, 47, 38, 29, 20, 11]
+    f, ax = fig(11, 5.4)
+    lanes = [("NIC", "net"), ("DAQIRI worker", "cpu"), ("capture thread", "cpu"), ("GPU", "gpu"), ("ring", "gpu"),
+             ("readers", "reader")]
+    ys = [47, 39, 31, 23, 15, 7]
     for (name, k), y in zip(lanes, ys):
-        ax.add_patch(Rectangle((14, y - 3.8), 95, 7.6, fc=C[k][0], ec="none", alpha=0.5))
+        ax.add_patch(Rectangle((16, y - 3.2), 93, 6.4, fc=C[k][0], ec="none", alpha=0.55))
         ax.text(1, y, name, fontsize=8, va="center", fontweight="bold", color=C[k][1])
-    ax.text(14, 64, "time →  (one packet, then the block it belongs to; typical values at 60.8 Gb/s)",
-            fontsize=8.5, fontweight="bold")
-    ev = [(16, 0, "frame arrives;\nflow rule → RX queue"), (29, 0, "DMA into header\nand payload buffers"),
-          (33, 1, "burst complete:\n1024 pkts ≈ 1.1 ms\n(or 1 ms timeout)"), (46, 2, "get_rx_burst: parse\nheaders, "
-          "assembler\n→ block + slot"), (60, 2, "sort jobs,\nlaunch scatter"), (64, 3, "scatter kernel\n≈ 83 µs"),
-          (74, 2, "kernel done:\nburst returned\nto DAQIRI"), (74, 4, "payload now in\nrow t of the block")]
+    # label placement per event (dx, dy, ha, va), chosen to keep clear of the incoming/outgoing arrows
+    up, right, left, down = (0, 1.3, "center", "bottom"), (1.0, 0, "left", "center"), (-1.0, 0, "right", "center"), \
+        (0, -1.3, "center", "top")
+    ev = [(19, 0, "arrives", up), (28, 0, "DMA", up), (33, 1, "burst ready", right), (45, 2, "parse + place", down),
+          (57, 2, "launch", up), (62, 3, "scatter", left), (72, 2, "burst freed", up), (72, 4, "row written", right)]
     pts = {}
-    for x, lane, t in ev:
-        y = ys[lane] - 2.6
+    for x, lane, t, (dx, dy, ha, va) in ev:
+        y = ys[lane] - 1.2
         pts[(x, lane)] = (x, y)
         ax.plot([x], [y], "o", color="#333", ms=4)
-        ax.text(x + 0.6, y + 0.9, t, fontsize=6.4, va="bottom")
-    chain = [((16, 0), (29, 0)), ((29, 0), (33, 1)), ((33, 1), (46, 2)), ((46, 2), (60, 2)), ((60, 2), (64, 3)),
-             ((64, 3), (74, 2)), ((64, 3), (74, 4))]
+        ax.text(x + dx, y + dy, t, fontsize=7.3, ha=ha, va=va)
+    chain = [((19, 0), (28, 0)), ((28, 0), (33, 1)), ((33, 1), (45, 2)), ((45, 2), (57, 2)), ((57, 2), (62, 3)),
+             ((62, 3), (72, 2)), ((62, 3), (72, 4))]
     for a, b in chain:
         (x0, y0), (x1, y1) = pts[a], pts[b]
-        arrow(ax, x0 + 0.5, y0, x1 - 0.5, y1, lw=0.9)
-    ax.plot([88, 88], [7, 61], ls="--", color="#888", lw=0.8)
-    ax.text(88.6, 60.5, "block complete\n(6144 packets = 6.71 ms)", fontsize=6.4, va="top")
-    ax.text(88.6, 38, "seal: zero-fill gaps\n→ CUDA event\n→ publish seq n", fontsize=6.4, va="center")
-    ax.text(88.6, 20, "readable ~2 s, then the\nslot is reused (seq n+S)", fontsize=6.4, va="center")
-    ax.text(88.6, 11, "spectrometer reads it\nwithin ~1 ms (lag 0);\ndump copies on trigger", fontsize=6.4,
-            va="center")
-    ax.text(14, 2.5, "A payload stays in DAQIRI's pinned buffer only until its burst's scatter kernel has run "
-                     "(~1–2 ms); its data then lives in the ring for ~2 s.", fontsize=7.3)
+        arrow(ax, x0 + 0.6, y0, x1 - 0.6, y1, lw=0.9)
+    ax.plot([84, 84], [3, 51], ls="--", color="#888", lw=0.8)
+    ax.text(84, 52, "block complete", fontsize=7.3, ha="center")
+    for x, lane, t, (dx, dy, ha, va) in ((90, 2, "seal + publish", up), (97, 4, "readable ~2 s", right),
+                                         (90, 5, "read", left)):
+        y = ys[lane] - 1.2
+        ax.plot([x], [y], "o", color="#333", ms=4)
+        ax.text(x + dx, y + dy, t, fontsize=7.3, ha=ha, va=va)
+    arrow(ax, 90.6, ys[2] - 1.2, 96.5, ys[4] - 1.2, lw=0.9)
+    arrow(ax, 96.5, ys[4] - 1.2, 90.6, ys[5] - 1.2, lw=0.9)
+    ax.annotate("", xy=(72, 1.2), xytext=(19, 1.2), arrowprops=dict(arrowstyle="<->", color="#555", lw=0.8))
+    ax.text(45.5, -0.6, "≈ 1–2 ms per packet", fontsize=7.3, ha="center", color="#555")
     save(f, out, "f07_packet_lifetime")
 
+
 def assembler(out):
-    f, ax = fig(11, 5.2)
-    ax.text(1, 49, "Assembler: packets → blocks of 1024 spectra (6 packets per spectrum, 6144 slots per block)",
-            fontsize=9, fontweight="bold")
     import numpy as np
+    f, ax = fig(11, 3.6)
     rng = np.random.default_rng(3)
-    blocks = [("block n−1\nsealed, published", 1.0), ("block n\ncomplete → sealed", 1.0),
-              ("block n+1\nopen (gaps)", 0.93), ("block n+2\nopen", 0.55), ("block n+3\nopen (newest)", 0.2)]
-    for j, (name, frac) in enumerate(blocks):
-        x0 = 4 + j * 21
-        ax.text(x0, 42.5, name, fontsize=7.5, va="bottom")
+    blocks = [("published", 1.0, "#9fbfa3"), ("complete", 1.0, None), ("open", 0.93, None), ("open", 0.55, None),
+              ("newest", 0.2, None)]
+    for j, (name, frac, fixed) in enumerate(blocks):
+        x0 = 9 + j * 20.5
+        ax.text(x0 + 9, 33.5, name, fontsize=8, ha="center")
         for b in range(6):
             for t in range(16):
-                filled = rng.random() < frac if frac < 1 else True
-                col = "#2e8b3a" if filled else "#ffffff"
-                if j == 0:
-                    col = "#9fbfa3"
-                ax.add_patch(Rectangle((x0 + t * 1.15, 14 + b * 4.4), 1.05, 4.0, fc=col, ec="#999", lw=0.3))
-        ax.text(x0, 11.5, "t →  (1024 spectra; 16 drawn)", fontsize=6.3)
-    ax.text(1.2, 27, "bindex\n b = 0…5", fontsize=6.8, rotation=90, va="center")
-    box(ax, 4, 0.5, 104, 9.5, "At most 4 open blocks. The oldest is sealed when complete, or when the newest block is more "
-                              "than 2 ahead (stale):\nits missing slots are zero-filled and counted. Blocks with no "
-                              "packet at all are 'skipped'. Duplicates and packets for sealed\nblocks are rejected. t "
-                              "jumping back by more than 1024 blocks = stream restart (re-sync).", "plain", fs=7.2)
+                filled = True if frac >= 1 else rng.random() < frac
+                col = fixed or ("#2e8b3a" if filled else "#ffffff")
+                ax.add_patch(Rectangle((x0 + t * 1.15, 5 + b * 4.3), 1.05, 3.9, fc=col, ec="#aaa", lw=0.3))
+    ax.text(1, 18, "b", fontsize=8, va="center")
+    ax.annotate("", xy=(25, 1.6), xytext=(9, 1.6), arrowprops=dict(arrowstyle="->", color="#555", lw=0.8))
+    ax.text(26, 1.6, "t", fontsize=8, va="center")
+    ax.add_patch(FancyBboxPatch((28.6, 3.8), 80.3, 27.4, boxstyle="round,pad=0.3", fc="none", ec="#2f6db0", lw=1,
+                                ls="--"))
+    ax.text(68.5, 0.6, "open blocks (at most 4)", fontsize=7.5, color="#2f6db0", ha="center")
     save(f, out, "f08_assembler")
 
 
 def scatter(out):
-    f, ax = fig(11, 4.6)
-    ax.text(1, 44, "Scatter kernel: one CUDA block = 32 packets (jobs) × 32 channels, transposed through shared memory",
-            fontsize=9, fontweight="bold")
+    f, ax = fig(11, 3.8)
+    hi_in, hi_tile, hi_out = "#2e8b3a", "#a08800", "#1f8a83"
     for r in range(8):
         for c in range(8):
-            ax.add_patch(Rectangle((3 + c * 2.6, 8 + r * 3.6), 2.4, 3.3, fc="#d7f0d4", ec="#2e8b3a", lw=0.5))
-    ax.text(3, 38, "packet payloads (pinned host)\nrow = one packet, 8 B per channel\nwarp reads 256 contiguous B",
-            fontsize=7.2, va="bottom")
-    arrow(ax, 25, 22, 35, 22, "load", fs=7.5)
+            ax.add_patch(Rectangle((4 + c * 2.6, 4 + r * 3.4), 2.4, 3.1, fc=hi_in if c == 2 else "#d7f0d4",
+                                   ec="#2e8b3a", lw=0.5))
+    ax.text(14.5, 33, "packets", fontsize=8.5, ha="center")
+    ax.text(14.5, 1, "→ channel", fontsize=7.3, ha="center", color="#555")
+    ax.text(1.8, 17.6, "← packet (t)", fontsize=7.3, rotation=90, va="center", color="#555")
+    arrow(ax, 27, 17.6, 36, 17.6, "load", fs=7.5)
     for r in range(8):
         for c in range(8):
-            ax.add_patch(Rectangle((37 + c * 2.6, 8 + r * 3.6), 2.4, 3.3, fc="#fff6c9", ec="#a08800", lw=0.5))
-    ax.text(37, 38, "shared memory tile\n32 × 33 × 8 B\n(+1 column: no bank conflicts)", fontsize=7.2, va="bottom")
-    arrow(ax, 59, 22, 69, 22, "store\ntransposed", fs=7.5)
+            ax.add_patch(Rectangle((38 + c * 2.6, 4 + r * 3.4), 2.4, 3.1, fc=hi_tile if c == 2 else "#fff6c9",
+                                   ec="#a08800", lw=0.5))
+    ax.text(48.5, 33, "shared-memory tile", fontsize=8.5, ha="center")
+    arrow(ax, 61, 17.6, 70, 17.6, "store", fs=7.5)
     for r in range(8):
-        ax.add_patch(Rectangle((71, 8 + r * 3.6), 20.8, 3.3, fc="#d2f1ef", ec="#1f8a83", lw=0.5))
-    ax.text(71, 38, "ring block rows [beam][channel][t][pol]\nwarp writes 32 consecutive t\nof one channel row = 128-B run",
-            fontsize=7.2, va="bottom")
-    box(ax, 94, 8, 15, 28, "Jobs are sorted\nby channel group\non the CPU, so a\ntile's 32 jobs are\nconsecutive in t.\n\n"
-                           "Missing packets:\nsame kernel,\nnull source →\nzeros.\n\n≈ 83 µs per burst\n≈ 200 GB/s", "plain",
-        fs=7)
+        ax.add_patch(Rectangle((72, 4 + r * 3.4), 26, 3.1, fc=hi_out if r == 5 else "#d2f1ef", ec="#1f8a83", lw=0.5))
+    ax.text(85, 33, "ring rows", fontsize=8.5, ha="center")
+    ax.text(85, 1, "→ t", fontsize=7.3, ha="center", color="#555")
+    ax.text(100, 22.6, "one channel", fontsize=7.3, va="center", color=hi_out)
     save(f, out, "f09_scatter")
 
 
 def ring(out):
-    f, ax = fig(11, 6.4)
-    group(ax, 1, 34, 50, 28, "control plane: /dev/shm/lft3-<stream> (560 KB, fixed layout)", "cpu", fs=8)
-    rows = [("header: layout, obs id, config hash, software, state", 54), ("head = next seq · futex word · writer heartbeat", 50),
-            ("capture statistics (packets, blocks, loss, Gb/s)", 46), ("16 reader entries: name, cursor, lag, overruns, heartbeat", 42),
-            ("seqToSlot[4096]: which slot holds sequence n", 38.5), ("slot metadata[S]: seq, block, t0, missing, NCO, UNIX t0", 35)]
-    for t, y in rows:
-        box(ax, 3, y, 46, 3.4, t, "cpu", fs=7, rad=0.2, lw=0.8)
-    group(ax, 55, 34, 54, 28, "data plane: CUDA VMM allocation (fd via .sock)", "gpu", fs=8)
-    for i in range(10):
-        k = "warn" if i == 3 else ("gpu" if i != 2 else "reader")
-        lab = ["n−2", "n−1", "n", "write", "", "", "", "", "n−S+1", ""][i]
-        box(ax, 57 + i * 5.1, 44, 4.7, 10, lab, k, fs=6.5, rad=0.3, lw=0.8)
-    ax.text(57, 40.5, "slots fill in allocation order; each = 50.3 MB block [2][6144][1024][2] int8", fontsize=7)
-    ax.text(57, 37, "green: published · teal: a reader's cursor · red: acquired by the writer (seq = invalid)",
-            fontsize=7)
-    # protocol
-    ax.text(1, 29, "Writer (capture), never waits for readers:", fontsize=8.5, fontweight="bold", color="#2f6db0")
-    ax.text(1, 26.5, "1  acquireSlot(): slot.seq ← invalid (release), before any GPU write\n"
-                     "2  scatter + zero-fill kernels; record CUDA event\n"
-                     "3  event done → slot metadata; slot.seq ← n; seqToSlot[n] ← slot; head ← n+1 (release); futex wake",
-            fontsize=7.6, va="top", family="DejaVu Sans Mono")
-    ax.text(1, 15, "Reader (any process), lock-free:", fontsize=8.5, fontweight="bold", color="#1f8a83")
-    ax.text(1, 12.5, "1  wait(n): futex until head > n          (if n < head − (S − 8): skip ahead, count overruns)\n"
-                     "2  begin(n): slot = seqToSlot[n]; check slot.seq == n; copy metadata\n"
-                     "3  GPU work on the block; synchronise\n"
-                     "4  stillValid(n): slot.seq == n again? no → overrun, discard the result\n"
-                     "5  consumed(n+1): cursor, lag, heartbeat (lossless readers hold the writer back, synthetic/file only)",
-            fontsize=7.6, va="top", family="DejaVu Sans Mono")
+    f, ax = fig(11, 4.2)
+    group(ax, 1, 3, 40, 37, "control block (shared memory)", "cpu", fs=8.5)
+    for i, t in enumerate(["layout · ids", "head · futex", "capture statistics", "reader cursors", "seq → slot",
+                           "slot metadata"]):
+        box(ax, 3, 31 - i * 5, 36, 4, t, "cpu", fs=7.8, rad=0.2, lw=0.8)
+    group(ax, 45, 3, 64, 37, "voltage blocks (GPU memory)", "gpu", fs=8.5)
+    kinds = ["gpu"] * 3 + ["reader"] + ["gpu"] * 2 + ["warn"] + ["gpu"] * 3
+    for i, k in enumerate(kinds):
+        box(ax, 48 + i * 6, 12, 5.3, 14, "", k, rad=0.3)
+    arrow(ax, 87.5, 34, 87.5, 26.5)
+    ax.text(87.5, 34.8, "writer", fontsize=7.8, ha="center", color="#b03a2e")
+    arrow(ax, 69.5, 34, 69.5, 26.5)
+    ax.text(69.5, 34.8, "reader", fontsize=7.8, ha="center", color="#1f8a83")
+    ax.text(81.3, 8.5, "head", fontsize=7.8, ha="center")
+    arrow(ax, 81.3, 10, 81.3, 12, lw=1)
+    ax.annotate("", xy=(108, 6), xytext=(48, 6), arrowprops=dict(arrowstyle="->", color="#555", lw=0.8))
+    ax.text(78, 3.8, "time (wraps around)", fontsize=7.3, ha="center", color="#555")
     save(f, out, "f10_ring")
 
 
 def finespec(out):
-    f, ax = fig(11, 5.6)
-    ax.text(1, 53, "Fine spectrometer (per block, per beam and coarse channel): one 1024-sample row → 8 FFTs of 128",
-            fontsize=9, fontweight="bold")
+    f, ax = fig(11, 3.8)
     for i in range(8):
-        box(ax, 3 + i * 9.4, 41, 8.8, 6, f"seg {i}\n128 × (X,Y)", "gpu", fs=6.8, rad=0.2, lw=0.8)
-    ax.text(3, 48.5, "row = 1024 dual-pol samples = 6.71 ms", fontsize=7.2)
+        box(ax, 3 + i * 7.6, 28, 7, 5, f"{i}", "gpu", fs=8, rad=0.2, lw=0.8)
+    ax.text(3, 34.5, "one row: 1024 samples = 8 segments of 128", fontsize=7.8, color="#555")
     for i in range(8):
-        arrow(ax, 7.4 + i * 9.4, 41, 7.4 + i * 9.4, 37.5, lw=0.8)
-        box(ax, 3 + i * 9.4, 32, 8.8, 5.2, "FFT X, Y\n|X|²+|Y|²", "reader", fs=6.5, rad=0.2, lw=0.8)
-        arrow(ax, 7.4 + i * 9.4, 32, 40, 26.5, lw=0.6)
-    box(ax, 28, 20.5, 24, 6, "Σ over 8 segments\n(in registers)", "reader", fs=7.2)
-    arrow(ax, 40, 20.5, 40, 16.5)
-    box(ax, 22, 9.5, 36, 7, "accumulator += (fftshift: bin b → (b+64) mod 128)\nfor 149 blocks = 1192 FFTs = 0.99992 s",
-        "gpu", fs=7.2)
-    arrow(ax, 40, 9.5, 40, 5.5)
-    box(ax, 6, 0.5, 68, 5, "spectrum: 6144 coarse × 128 fine = 786 432 channels of 1.192 kHz per beam", "store",
-        fs=7.4)
-    box(ax, 80, 26, 29, 23, "Integration windows are aligned\nto absolute block numbers:\nwindow w = blocks [149w, 149w+148]"
-                            "\n\nall readers and links share\none time grid; a reader that\nstarts mid-window waits for the\n"
-                            "next boundary", "plain", fs=7.2)
-    box(ax, 80, 1, 29, 21, "Coarse quick-look (no extra pass):\nP_coarse(k) = Σ_b P_fine(k, b) / 128\n"
-                           "(Parseval: Σ|X_b|² = N Σ|x_n|²)\n\nmissing per spectrum = zero-filled\npackets + skipped/lost "
-                           "blocks\n× 6144", "plain", fs=7.2)
+        x = 6.5 + i * 7.6
+        arrow(ax, x, 28, x, 24.5, lw=0.8)
+        box(ax, 3 + i * 7.6, 19.5, 7, 5, "FFT", "reader", fs=7.5, rad=0.2, lw=0.8)
+        arrow(ax, x, 19.5, 33, 15, lw=0.6)
+    box(ax, 22, 9, 22, 6, "Σ |X|² + |Y|²", "reader")
+    arrow(ax, 44, 12, 52, 12)
+    box(ax, 52, 9, 22, 6, "accumulator\n(149 blocks)", "gpu", fs=8)
+    arrow(ax, 74, 12, 82, 12)
+    box(ax, 82, 9, 25, 6, "1 s spectrum\n786 432 ch", "store", fs=8)
+    arrow(ax, 94.5, 9, 94.5, 4.5)
+    box(ax, 82, 0, 25, 4.5, "coarse: Σ over 128 bins", "store", fs=7.3, rad=0.2)
     save(f, out, "f11_finespec")
 
 
 def warp_fft(out):
-    f, ax = fig(11, 5.4)
-    ax.text(1, 51, "Warp FFT (N = 128 = 4 × 32): one warp per (channel, beam), no shared memory, no barriers",
-            fontsize=9, fontweight="bold")
+    f, ax = fig(11, 3.6)
     for j in range(8):
         lane = j if j < 7 else 31
-        x = 3 + j * 6.2
-        ax.text(x + 2.6, 46.5, f"lane {lane}" if j != 6 else "…", fontsize=6.6, ha="center")
+        x = 2 + j * 4.6
+        ax.text(x + 2, 31.5, f"{lane}" if j != 6 else "…", fontsize=7.3, ha="center", color="#555")
         if j == 6:
             continue
         for k in range(4):
-            box(ax, x, 34.5 + (3 - k) * 2.8, 5.4, 2.5, f"x[{lane}+{32 * k}]", "gpu", fs=5.6, rad=0.15, lw=0.6)
-    steps = ["1  each lane loads 4 samples n = j + 32k",
-             "   (4-byte X,Y loads: 128 B per warp per k)",
-             "2  4-point DFT over k in registers:",
-             "   y_q[j] = Σ_k x[j+32k] · W4^(kq)",
-             "3  twiddle: z_q[j] = y_q[j] · W128^(jq)",
-             "4  for each q, a 32-point FFT across the lanes:",
-             "   5 radix-2 stages with __shfl_xor (h = 16 … 1)",
-             "5  lane l holds X[q + 4·bitrev5(l)]; |X|² + |Y|²",
-             "   summed over the 8 segments in registers",
-             "6  write 4 fftshifted bins per lane"]
-    for i, t in enumerate(steps):
-        indent = t.startswith("   ")
-        ax.text(3, 31.5 - i * 2.35, t, fontsize=7.2, family="DejaVu Sans Mono" if indent else None)
-    bx, dx = 64, 11
+            box(ax, x, 5 + (3 - k) * 6.2, 4, 5.4, "", "gpu", rad=0.15, lw=0.6)
+    ax.text(18, 34.5, "lanes (4 samples each)", fontsize=8, ha="center")
+    arrow(ax, 39, 17.5, 46, 17.5)
+    box(ax, 46, 11, 18, 13, "4-point DFT\n+ twiddle\n(registers)", "reader", fs=8)
+    arrow(ax, 64, 17.5, 69, 17.5)
+    bx, dx = 71, 9.5
     for s_ in range(4):
         for l in range(8):
-            ax.plot([bx + s_ * dx], [44 - l * 3.6], "o", ms=3.2, color="#2e8b3a")
-            ax.text(bx - 2.2, 44 - l * 3.6, f"{l}", fontsize=6, va="center") if s_ == 0 else None
+            ax.plot([bx + s_ * dx], [29 - l * 3.4], "o", ms=2.8, color="#2e8b3a")
     for s_, h in enumerate([4, 2, 1]):
         for l in range(8):
             for p_ in (l, l ^ h):
-                ax.plot([bx + s_ * dx, bx + (s_ + 1) * dx], [44 - l * 3.6, 44 - p_ * 3.6], color="#2e8b3a", lw=0.6,
+                ax.plot([bx + s_ * dx, bx + (s_ + 1) * dx], [29 - l * 3.4, 29 - p_ * 3.4], color="#2e8b3a", lw=0.6,
                         alpha=0.75)
-        ax.text(bx + s_ * dx + dx / 2, 47, f"xor {h}", fontsize=6.6, ha="center")
-    ax.text(bx - 3, 15, "butterfly pattern across lanes (8 of 32 lanes and\n3 of 5 stages shown): each lane trades "
-                        "values with\nlane l xor h, then adds or subtracts and multiplies\nby a twiddle; no shared "
-                        "memory, no __syncthreads", fontsize=6.9, va="top")
-    box(ax, 3, 0.5, 104, 6, "Before: 64-thread blocks, 7 synchronised stages × 8 segments = 56 __syncthreads per block "
-                            "of data → 0.50 ms per 6.7 ms block.\nWarp kernel: 0.30 ms (1.66×), ~167 GB/s, close to "
-                            "memory-bound; matches a reference DFT to < 1e-4.", "plain", fs=7.1)
+    ax.text(bx + 1.5 * dx, 34.5, "32-point FFT across lanes (shuffles)", fontsize=8, ha="center")
     save(f, out, "f12_warp_fft")
 
+
 def dump(out):
-    f, ax = fig(11, 3.6)
-    for i in range(22):
+    f, ax = fig(11, 3.0)
+    n = 24
+    for i in range(n):
         k = "gpu"
-        if 9 <= i <= 15:
-            k = "warn" if i > 12 else "reader"
-        box(ax, 3 + i * 4.6, 20, 4.2, 7, "", k, rad=0.2, lw=0.6)
-    ax.text(3, 29, "ring (oldest → newest block)", fontsize=7.5)
-    ax.plot([3 + 12.5 * 4.6] * 2, [17, 30], color="#b03a2e", lw=1.6)
-    ax.text(3 + 12.5 * 4.6, 31, "trigger time t", ha="center", fontsize=7.5, color="#b03a2e")
-    ax.text(3 + 9 * 4.6, 16, "← pre (0.5 s): already in the ring", fontsize=7, color="#1f8a83")
-    ax.text(3 + 13 * 4.6, 13, "post (0.5 s): copied as they are published →", fontsize=7, color="#b03a2e")
-    box(ax, 3, 1, 44, 8, "GPU copies each block into a pinned host buffer\n(7.5 GB/s of window in ~0.7 s; checked with "
-                         "the seqlock)", "reader", fs=7.2)
-    box(ax, 50, 1, 58, 8, "then written at NVMe speed (~2.8 s per 1 s window): one GUPPI RAW file\nper beam; "
-                          "each block = 80-character header cards + one beam of a ring block\n"
-                          "([channel][time][pol][re, im] int8)", "store", fs=7.0)
+        if 9 <= i <= 12:
+            k = "reader"
+        elif 13 <= i <= 16:
+            k = "warn"
+        box(ax, 2 + i * 4.4, 15, 4, 7, "", k, rad=0.2, lw=0.6)
+    tx = 2 + 13 * 4.4 - 0.2
+    ax.plot([tx, tx], [12.5, 25], color="#b03a2e", lw=1.6)
+    ax.text(tx, 26, "trigger", ha="center", fontsize=8, color="#b03a2e")
+    ax.annotate("", xy=(2 + 9 * 4.4, 12.5), xytext=(tx, 12.5), arrowprops=dict(arrowstyle="<->", color="#1f8a83"))
+    ax.text((2 + 9 * 4.4 + tx) / 2, 9.8, "pre", ha="center", fontsize=7.5, color="#1f8a83")
+    ax.annotate("", xy=(2 + 17 * 4.4 - 0.4, 12.5), xytext=(tx, 12.5), arrowprops=dict(arrowstyle="<->", color="#b03a2e"))
+    ax.text((2 + 17 * 4.4 + tx) / 2, 9.8, "post", ha="center", fontsize=7.5, color="#b03a2e")
+    ax.text(2, 24, "ring", fontsize=8)
+    box(ax, 30, 0.5, 22, 6, "pinned host buffer", "reader", fs=8)
+    box(ax, 62, 0.5, 22, 6, "GUPPI RAW (NVMe)", "store", fs=8)
+    arrow(ax, 52, 3.5, 62, 3.5)
+    arrow(ax, tx, 9, 44, 6.5, lw=1)
     save(f, out, "f13_dump")
 
 
 def processes(out):
-    f, ax = fig(11, 5.8)
-    box(ax, 1, 46, 26, 10, "lft3-pipeline run\n(Python, host)\nplans + launches containers,\nstatus, metrics, NIC log",
-        "cpu", fs=7.4)
-    group(ax, 31, 3, 78, 55, "containers (image lft3-runtime), all --ipc=host, one set per link", "plain")
-    box(ax, 33, 41, 22, 12, "lft3-<board>-<link>-capture\n--net host, NET_RAW,\nIPC_LOCK, /dev/infiniband\n"
-                            "cpuset = link cores", "cpu", fs=7)
-    box(ax, 59, 41, 22, 12, "…-spectrometer\nas you (uid + groups)\n--net none\ncpuset = reader_cpus", "reader",
-        fs=7)
-    box(ax, 85, 41, 22, 12, "…-dump\nas you, --net none\ntrigger socket\n/dev/shm/...-dump.sock", "reader", fs=7)
-    box(ax, 33, 20, 74, 12, "/dev/shm (host IPC namespace):  lft3-<stream> (control block)  ·  lft3-<stream>.sock (ring "
-                            "fd)\n·  lft3-<stream>-dump.sock (triggers)\n+ GPU: the ring's VMM allocation, imported by "
-                            "each reader", "mem", fs=7.4)
-    for x in (44, 70, 96):
-        arrow(ax, x, 41, x, 32, style="<|-|>")
-    box(ax, 33, 5, 35, 11, "logs: <run_dir>/<stream>-<role>.log\nstatus.jsonl, nic-<link>.csv, plan.txt", "store",
-        fs=7.2)
-    box(ax, 72, 5, 35, 11, "lft3-pipeline status / trigger / stop\nlft3.ring (Python): reads /dev/shm\nPrometheus "
-                           "(--metrics-port)", "cpu", fs=7.2)
-    arrow(ax, 27, 51, 33, 47)
-    ax.plot([14, 14], [40, 46], ls=":", color="#333", lw=1)
-    box(ax, 1, 20, 26, 20, "start order: capture →\nwait for its ring →\nreaders\n\nstop order: readers\n(close files) → "
-                           "capture\n\nCtrl-C, --duration or\nlft3-pipeline stop", "plain", fs=7.2)
+    f, ax = fig(11, 4.0)
+    box(ax, 1, 28, 20, 8, "lft3-pipeline", "cpu", bold=True)
+    group(ax, 26, 13, 83, 26, "containers (one set per link)", "plain", fs=8.5)
+    box(ax, 29, 24, 22, 9, "capture", "cpu")
+    box(ax, 57, 24, 22, 9, "spectrometer", "reader")
+    box(ax, 85, 24, 22, 9, "dump", "reader")
+    box(ax, 29, 15, 78, 6, "/dev/shm  ·  GPU ring", "mem", fs=8.5)
+    for x in (40, 68, 96):
+        arrow(ax, x, 24, x, 21, style="<|-|>", lw=1.1)
+    arrow(ax, 21, 32, 29, 30)
+    box(ax, 29, 1, 36, 7, "run directory: logs, status, NIC counters", "store", fs=7.8)
+    box(ax, 71, 1, 36, 7, "lft3-pipeline status · trigger · stop", "cpu", fs=7.8)
+    arrow(ax, 89, 8, 89, 15, style="<|-|>", lw=1.1)
+    arrow(ax, 11, 28, 29, 5, lw=1, ls=":")
     save(f, out, "f14_processes")
 
 
 def bringup(out):
-    f, ax = fig(11, 2.5)
-    steps = ["program\n.fpg", "destination\nMAC (ARP 10)", "RFDC init\nLMK / LMX", "MTS", "mixer event\n= SYSREF",
-             "NCO\n(fine mixers\n+ header)", "requantiser,\nDDR, packet\nmask, fid", "PPS period", "sync\n(t = 0)"]
+    f, ax = fig(11, 1.6)
+    steps = ["program", "destination\nMAC", "clocks", "MTS", "SYSREF\nevents", "NCO", "requantiser\n+ packetizer",
+             "PPS", "sync"]
     x = 1
     for i, s in enumerate(steps):
-        box(ax, x, 8, 10.8, 12, s, "board", fs=7.2)
+        box(ax, x, 3, 10.6, 10, s, "board", fs=8)
         if i:
-            arrow(ax, x - 1.3, 14, x, 14)
+            arrow(ax, x - 1.4, 8, x, 8)
         x += 12.1
-    ax.text(1, 3, "lft3-board start: ~10 s; every board in parallel under its lock, syncs released from a barrier. "
-                  "packet_mask, fid, pfb_lsb only take effect after a sync.", fontsize=7.5)
     save(f, out, "f15_bringup")
 
 
 def viewer(out):
-    f, ax = fig(11, 4.4)
-    box(ax, 1, 14, 18, 18, "browser\n(canvas waterfall,\nstrips, drift tool,\nmarks)", "plain", fs=7.6)
-    group(ax, 23, 2, 64, 40, "lft3-view (C++, on the Spark, token-protected HTTP :8687)", "cpu", fs=8)
-    box(ax, 25, 25, 18, 11, "run catalog\nchains rotated files\nby lft3_timestamp", "cpu", fs=7)
-    box(ax, 46, 25, 18, 11, "HDF5 metadata +\nchunk index only\n(H5Dchunk_iter)", "cpu", fs=7)
-    box(ax, 67, 25, 18, 11, "parallel pread +\ninflate/unshuffle\nper 64 Ki-ch chunk", "cpu", fs=7)
-    box(ax, 25, 5, 28, 13, "encode u16db:\n16-bit dB planes,\nhi bytes RLE, gzip\n(2.2–2.7× smaller)", "cpu", fs=7)
-    box(ax, 57, 5, 28, 13, "reduce to the screen tile:\nmax / mean per pixel,\noptional flatten\n(vectorised, all cores)",
-        "cpu", fs=7)
-    box(ax, 91, 14, 18, 18, "FBH5 files\nspectra/<board>/\n+ quicklook/\ntriggers.log\nknown_rfi.json", "store",
-        fs=7.2)
-    arrow(ax, 19, 27, 25, 30.5)
-    ax.text(19.5, 32, "GET /api/tile", fontsize=6.8)
-    arrow(ax, 43, 30.5, 46, 30.5)
-    arrow(ax, 64, 30.5, 67, 30.5)
-    arrow(ax, 91, 25, 85, 28)
-    arrow(ax, 76, 25, 76, 18)
-    arrow(ax, 57, 11.5, 53, 11.5)
-    arrow(ax, 25, 9, 19, 17)
-    ax.text(10.5, 9.5, "tile ~2 MB", fontsize=6.8)
+    f, ax = fig(11, 3.4)
+    box(ax, 1, 12, 15, 10, "browser", "plain", bold=True)
+    group(ax, 21, 1, 66, 31, "lft3-view (C++, on the Spark)", "cpu", fs=8.5)
+    box(ax, 24, 17, 18, 8, "run catalog", "cpu")
+    box(ax, 45, 17, 18, 8, "chunk index", "cpu")
+    box(ax, 66, 17, 18, 8, "parallel read\n+ decode", "cpu", fs=8)
+    box(ax, 24, 4, 27, 8, "encode tile (16-bit dB)", "cpu", fs=8)
+    box(ax, 57, 4, 27, 8, "reduce to pixels", "cpu", fs=8)
+    box(ax, 92, 12, 17, 10, "FBH5\nfiles", "store")
+    arrow(ax, 16, 19, 24, 21)
+    arrow(ax, 42, 21, 45, 21)
+    arrow(ax, 63, 21, 66, 21)
+    arrow(ax, 92, 17, 84, 20)
+    arrow(ax, 75, 17, 75, 12)
+    arrow(ax, 57, 8, 51, 8)
+    arrow(ax, 24, 8, 16, 14.5)
+    ax.text(17, 23.5, "request", fontsize=7.3, color="#555")
+    ax.text(15, 8, "tile", fontsize=7.3, color="#555", ha="right")
     save(f, out, "f16_viewer")
+
+
+# ------------------------------------------------------------------------------------------------ charts
 
 def chart_kernels(out):
     f, ax = plt.subplots(figsize=(7.2, 2.6))
