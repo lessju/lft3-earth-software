@@ -1,0 +1,21 @@
+{
+  "description": "Known spurs and RFI in the LFT3-Earth band (sky MHz). Read by lft3-view (tools/viewer) for overlays; the start of the static RFI/spur mask. combs: every multiple of step_mhz (+ offset_mhz); lines: single frequencies; bands: ranges.",
+  "combs": [
+    {
+      "step_mhz": 125.0,
+      "offset_mhz": 0.0,
+      "width_mhz": 0.05,
+      "label": "125 MHz PL-clock harmonic (board spur)",
+      "source": "seen on all inputs with nothing connected, 2026-11-12 (1750/2000/2125/2250/2375 MHz confirmed)"
+    }
+  ],
+  "lines": [],
+  "bands": [
+    {
+      "fmin_mhz": 2402.0,
+      "fmax_mhz": 2422.0,
+      "label": "Wi-Fi channel 1 (the DGX Spark's own Wi-Fi)",
+      "source": "OFDM with a centre null, seen in every run since 2026-11-12"
+    }
+  ]
+}

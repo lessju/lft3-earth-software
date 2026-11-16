@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LFT3 spectra viewer</title>
+<style>
+  :root { --bg:#14161a; --panel:#1c1f25; --fg:#d8dce3; --dim:#8a919e; --line:#2f343d; --accent:#5aa9ff; --bad:#ff5a5a;
+          --trig:#ffa630; --rfi:#e05cff; --meas:#ffe14d; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 6px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  #bar label { color: var(--dim); display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+  select, input[type=number], button { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 3px 6px; font: inherit; }
+  input[type=number] { width: 70px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  #file { max-width: 420px; }
+  #readout { display: flex; gap: 20px; padding: 4px 10px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line); min-height: 26px; white-space: pre; overflow: hidden; }
+  #cursor { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #measure { color: var(--meas); }
+  #wrap { position: relative; flex: 1; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  #status { color: var(--dim); margin-left: auto; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  #help { color: var(--dim); font-size: 12px; padding: 3px 10px; background: var(--panel); border-top: 1px solid var(--line); }
+  #help .k { color: var(--fg); }
+  .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<div id="bar">
+  <label>Run <select id="file"></select></label>
+  <label>Input <select id="ifno"></select></label>
+  <label>Reduce <select id="stat"><option value="max">max (keeps tones)</option><option value="mean">mean</option></select></label>
+  <label title="divide out the 152.6 kHz coarse-channel response"><input type="checkbox" id="flatten"> flatten coarse channels</label>
+  <label title="divide every channel by its median over the spectra in view: steady spurs and the bandpass flatten, changes stand out"><input type="checkbox" id="norm"> normalise per channel</label>
+  <label>Colours <select id="cmap"><option>viridis</option><option>magma</option><option>gray</option></select></label>
+  <label><input type="checkbox" id="lock"> lock levels</label>
+  <label>min <input type="number" id="lo" step="1"></label>
+  <label>max <input type="number" id="hi" step="1"></label>
+  <label title="trigger times, known spurs/RFI (config/known_rfi.json) and file boundaries"><input type="checkbox" id="marks" checked> marks</label>
+  <label title="poll for new spectra; move on to the next run of the same beam when one starts"><input type="checkbox" id="live"> follow live</label>
+  <label title="time increases upward, like a live spectrum analyser"><input type="checkbox" id="newest"> newest at top</label>
+  <button id="reset">Reset view</button>
+  <span id="status"></span>
+</div>
+<div id="readout"><span id="cursor">move the cursor over the image</span><span id="measure"></span></div>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<div id="help"><span class="k">drag</span> pan · <span class="k">wheel</span> zoom · <span class="k">shift+wheel</span> frequency only ·
+  <span class="k">alt+wheel</span> time only · <span class="k">double-click</span> reset ·
+  <span class="k">ctrl/⌘+click</span> two points to measure drift · <span class="k">Esc</span> clear ·
+  strips: spectrum of the row and time series of the column under the cursor (else max / mean over the view) ·
+  marks: <span style="color:var(--trig)">triggers</span>, <span style="color:var(--rfi)">known RFI</span>, dotted = next file,
+  <span style="color:var(--bad)">red ticks</span> = lost packets</div>
+
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+const TOKEN = params.get("token") || "";
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+
+// ---- state ---------------------------------------------------------------------------------------------
+let runs = [];                   // /api/files
+let meta = null;                 // /api/meta of the open run
+let view = null;                 // {t0,t1,c0,c1}: rows and channels (floats)
+let tile = null;                 // last tile: {geom, db, dbn (normalised, lazy), off, key}
+let overlays = { triggers: [], rfi: null };   // parsed /api/overlays
+let levels = { lo: 0, hi: 1 };
+let measure = [];                // drift points [{c, r}] in data coordinates
+let seq = 0, timer = null, dragging = null, mouse = null, W = 0, H = 0, dpr = 1;
+const L = 74, T = 14, B = 34, STRIP = 96, RSTRIP = 110, GAP = 8, R = 12;     // layout (CSS px)
+
+// ---- helpers -------------------------------------------------------------------------------------------
+function api(path, q) {
+  const u = new URLSearchParams(q || {});
+  if (TOKEN) u.set("token", TOKEN);
+  return fetch(path + "?" + u.toString());
+}
+async function apiJson(path, q) {
+  const r = await api(path, q);
+  if (!r.ok) throw new Error(path + ": " + (await r.text()));
+  return r.json();
+}
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// Time axis direction: by default row 0 is at the top and time increases downward (as lft3-plot and blimpy);
+// "newest at top" flips it. f is a fraction of the plot height from the top.
+const flipped = () => $("newest").checked;
+const rowAtFrac = f => flipped() ? view.t1 - f * (view.t1 - view.t0) : view.t0 + f * (view.t1 - view.t0);
+const freqOf = c => meta.fch1 + meta.foff * c;
+const chanOf = f => (f - meta.fch1) / meta.foff;
+const unixOf = r => (meta.tstart - 40587) * 86400 + meta.tsamp * r;
+const rowOfUnix = u => (u - unixOf(0)) / meta.tsamp;
+function utc(u, ms) {
+  const d = new Date(u * 1000), p = (n, w = 2) => String(n).padStart(w, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}` +
+    (ms ? "." + p(d.getUTCMilliseconds(), 3) : "") + " UTC";
+}
+function niceTicks(a, b, n) {
+  const span = b - a, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const f = raw / mag, step = (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = Math.ceil(a / step) * step; v <= b + step * 1e-9; v += step) out.push(v);
+  return { ticks: out, step };
+}
+function fmtHz(hz) {
+  const a = Math.abs(hz);
+  return a >= 1e6 ? (hz / 1e6).toFixed(4) + " MHz" : a >= 1e3 ? (hz / 1e3).toFixed(3) + " kHz" : hz.toFixed(1) + " Hz";
+}
+const plotRect = () => ({ x: L, y: T, w: Math.max(10, W - L - R - RSTRIP - GAP), h: Math.max(10, H - T - B - STRIP - GAP) });
+const stripRect = () => { const p = plotRect(); return { x: p.x, y: p.y + p.h + GAP, w: p.w, h: STRIP }; };
+const sideRect = () => { const p = plotRect(); return { x: p.x + p.w + GAP, y: p.y, w: RSTRIP, h: p.h }; };
+const inPlot = m => { const p = plotRect(); return m && m.x >= p.x && m.x <= p.x + p.w && m.y >= p.y && m.y <= p.y + p.h; };
+const runBeam = id => { const m = /^(.*)_\d{8}T\d{6}_beam(\d+)\.h5$/.exec(id); return m ? m[1] + "|" + m[2] : id; };
+
+// ---- colour maps ---------------------------------------------------------------------------------------
+const STOPS = {
+  viridis: ["#440154", "#472d7b", "#3b528b", "#2c728e", "#21918c", "#28ae80", "#5ec962", "#addc30", "#fde725"],
+  magma: ["#000004", "#180f3d", "#440f76", "#721f81", "#9e2f7f", "#cd4071", "#f1605d", "#fd9668", "#fcfdbf"],
+  gray: ["#000000", "#ffffff"],
+};
+function buildLut(name) {
+  const st = STOPS[name].map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
+  const lut = new Uint8ClampedArray(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255 * (st.length - 1), k = Math.min(st.length - 2, Math.floor(x)), f = x - k;
+    for (let c = 0; c < 3; c++) lut[i * 4 + c] = st[k][c] + (st[k + 1][c] - st[k][c]) * f;
+    lut[i * 4 + 3] = 255;
+  }
+  return lut;
+}
+let lut = buildLut("viridis");
+
+// ---- tile fetching -------------------------------------------------------------------------------------
+function scheduleFetch(delay) {
+  clearTimeout(timer);
+  timer = setTimeout(fetchTile, delay === undefined ? 100 : delay);
+}
+async function fetchTile() {
+  if (!meta || !view) return;
+  const p = plotRect(), mySeq = ++seq;
+  const q = {
+    file: meta.id, ifno: $("ifno").value, stat: $("stat").value, flatten: $("flatten").checked ? 1 : 0,
+    t0: Math.floor(view.t0), t1: Math.ceil(view.t1), c0: Math.floor(view.c0), c1: Math.ceil(view.c1),
+    w: Math.min(4096, Math.round(p.w * dpr)), h: Math.min(4096, Math.round(p.h * dpr)),
+    format: "u16db",
+  };
+  setStatus("loading…");
+  const t0 = performance.now();
+  let r;
+  try { r = await api("/api/tile", q); } catch (e) { setStatus(e.message, true); return; }
+  if (!r.ok) { setStatus(await r.text(), true); return; }
+  const geom = JSON.parse(r.headers.get("X-Tile"));
+  const buf = await r.arrayBuffer();               // gzip already undone by the browser
+  if (mySeq !== seq) return;                       // a newer request superseded this one
+  tile = { geom, db: decodeTile(geom, buf), dbn: null, off: null, key: "" };
+  render();
+  setStatus(`${geom.rows}×${geom.cols} px from ${(geom.bytes / 1e6).toFixed(1)} MB, ` +
+            `${(geom.seconds * 1000).toFixed(0)} ms read, sent ${(geom.wire_bytes / 1e6).toFixed(2)} MB ` +
+            `(${(geom.f32_bytes / geom.wire_bytes).toFixed(1)}× smaller), ${(performance.now() - t0).toFixed(0)} ms total`);
+}
+function setStatus(s, bad) { const e = $("status"); e.textContent = s; e.className = bad ? "err" : ""; }
+
+// ---- tile values ---------------------------------------------------------------------------------------
+// Tile body -> dB per pixel. u16db: high-byte plane then low-byte plane, q = 0 is "no data".
+function decodeTile(geom, buf) {
+  const n = geom.rows * geom.cols, db = new Float32Array(n);
+  if (geom.format === "u16db") {
+    const u8 = new Uint8Array(buf), step = (geom.db_hi - geom.db_lo) / 65534, lo = geom.db_lo - step;
+    for (let i = 0; i < n; i++) { const q = (u8[i] << 8) | u8[n + i]; db[i] = q ? lo + q * step : NaN; }
+  } else {
+    const f = new Float32Array(buf);
+    for (let i = 0; i < n; i++) db[i] = f[i] > 0 ? 10 * Math.log10(f[i]) : NaN;
+  }
+  return db;
+}
+// k-th smallest of a[0..n) (in place, Hoare quickselect)
+function select(a, n, k) {
+  let lo = 0, hi = n - 1;
+  while (lo < hi) {
+    const piv = a[(lo + hi) >> 1];
+    let i = lo, j = hi;
+    while (i <= j) {
+      while (a[i] < piv) i++;
+      while (a[j] > piv) j--;
+      if (i <= j) { const t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
+    }
+    if (k <= j) hi = j; else if (k >= i) lo = i; else return a[k];
+  }
+  return a[k];
+}
+// Per-channel normalisation: subtract (in dB, i.e. divide in power) each column's median over the tile's rows.
+function normalised(tl) {
+  if (tl.dbn) return tl.dbn;
+  const { rows, cols } = tl.geom, db = tl.db, out = new Float32Array(db.length), col = new Float32Array(rows);
+  for (let j = 0; j < cols; j++) {
+    let n = 0;
+    for (let i = 0; i < rows; i++) { const v = db[i * cols + j]; if (v === v) col[n++] = v; }
+    const med = n ? select(col, n, n >> 1) : 0;
+    for (let i = 0; i < rows; i++) out[i * cols + j] = db[i * cols + j] - med;
+  }
+  return (tl.dbn = out);
+}
+const shown = tl => $("norm").checked ? normalised(tl) : tl.db;
+const unit = () => $("norm").checked ? "dB rel. channel median" : "dB";
+
+function autoLevels(vals) {
+  const n = vals.length, step = Math.max(1, Math.floor(n / 40000)), s = [];
+  for (let i = 0; i < n; i += step) if (isFinite(vals[i])) s.push(vals[i]);
+  if (!s.length) return { lo: 0, hi: 1 };
+  s.sort((a, b) => a - b);
+  const lo = s[Math.floor(s.length * 0.02)], hi = s[Math.min(s.length - 1, Math.floor(s.length * 0.998))];
+  return { lo, hi: hi > lo ? hi : lo + 1 };
+}
+function paintTile(tl) {
+  const vals = shown(tl), key = $("cmap").value + "|" + levels.lo + "|" + levels.hi + "|" + $("norm").checked;
+  if (tl.off && tl.key === key) return;
+  const { rows, cols } = tl.geom;
+  if (!tl.off) { tl.off = document.createElement("canvas"); tl.off.width = cols; tl.off.height = rows; }
+  const c = tl.off.getContext("2d"), img = c.createImageData(cols, rows), px = img.data;
+  const sc = 255 / (levels.hi - levels.lo);
+  for (let i = 0, n = vals.length; i < n; i++) {
+    const v = vals[i], k = (isFinite(v) ? clamp(Math.round((v - levels.lo) * sc), 0, 255) : 0) * 4;
+    px[i * 4] = lut[k]; px[i * 4 + 1] = lut[k + 1]; px[i * 4 + 2] = lut[k + 2]; px[i * 4 + 3] = 255;
+  }
+  c.putImageData(img, 0, 0);
+  tl.key = key;
+}
+// tile pixel (row i, column j) under a data coordinate, or -1
+function tileCol(c) { const g = tile.geom, j = Math.floor((c - g.c0) / (g.c1 - g.c0) * g.cols); return j >= 0 && j < g.cols ? j : -1; }
+function tileRow(r) { const g = tile.geom, i = Math.floor((r - g.t0) / (g.t1 - g.t0) * g.rows); return i >= 0 && i < g.rows ? i : -1; }
+function cursorData() {
+  const p = plotRect();
+  return { c: view.c0 + (mouse.x - p.x) / p.w * (view.c1 - view.c0), r: rowAtFrac((mouse.y - p.y) / p.h) };
+}
+
+// ---- overlays ------------------------------------------------------------------------------------------
+async function loadOverlays() {
+  try {
+    const o = await apiJson("/api/overlays");
+    overlays.triggers = (o.triggers || []).map(line => {
+      const sp = line.indexOf(" "), t = Date.parse(sp > 0 ? line.slice(0, sp) : line);
+      return { unix: t / 1000, text: sp > 0 ? line.slice(sp + 1) : "" };
+    }).filter(t => isFinite(t.unix));
+    overlays.rfi = o.known_rfi;
+  } catch (e) { /* overlays are optional */ }
+}
+// known RFI as [{f0, f1, label}] (MHz) within [fa, fb]
+function rfiMarks(fa, fb) {
+  const out = [], k = overlays.rfi;
+  if (!k) return out;
+  for (const c of k.combs || []) {
+    const w = (c.width_mhz || 0) / 2, off = c.offset_mhz || 0;
+    for (let n = Math.ceil((fa - off) / c.step_mhz); off + n * c.step_mhz <= fb; n++) {
+      const f = off + n * c.step_mhz;
+      out.push({ f0: f - w, f1: f + w, label: `${c.label} (${f.toFixed(3)} MHz)` });
+    }
+  }
+  for (const l of k.lines || []) if (l.freq_mhz >= fa && l.freq_mhz <= fb)
+    out.push({ f0: l.freq_mhz - (l.width_mhz || 0) / 2, f1: l.freq_mhz + (l.width_mhz || 0) / 2, label: l.label });
+  for (const b of k.bands || []) if (b.fmax_mhz >= fa && b.fmin_mhz <= fb)
+    out.push({ f0: b.fmin_mhz, f1: b.fmax_mhz, label: b.label });
+  return out;
+}
+const visibleTriggers = () => overlays.triggers.map(t => ({ ...t, row: rowOfUnix(t.unix) }))
+  .filter(t => t.row >= view.t0 && t.row <= view.t1);
+
+// ---- rendering -----------------------------------------------------------------------------------------
+function render() {
+  if (!meta || !view) return;
+  const fg = css("--fg"), dim = css("--dim"), line = css("--line");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, W, H);
+  const p = plotRect(), s = stripRect(), sd = sideRect();
+  const xOf = c => p.x + (c - view.c0) / (view.c1 - view.c0) * p.w;
+  const yDown = r => p.y + (r - view.t0) / (view.t1 - view.t0) * p.h;
+  const yOf = r => flipped() ? 2 * p.y + p.h - yDown(r) : yDown(r);
+  const hover = inPlot(mouse) && !dragging && tile ? cursorData() : null;
+  const marks = $("marks").checked;
+  const fa = Math.min(freqOf(view.c0), freqOf(view.c1)), fb = Math.max(freqOf(view.c0), freqOf(view.c1));
+
+  if (tile) {
+    const vals = shown(tile), g = tile.geom, cols = g.cols, rows = g.rows;
+    if (!$("lock").checked) { levels = autoLevels(vals); $("lo").value = levels.lo.toFixed(1); $("hi").value = levels.hi.toFixed(1); }
+    paintTile(tile);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+    ctx.imageSmoothingEnabled = false;
+    if (flipped()) { ctx.translate(0, 2 * p.y + p.h); ctx.scale(1, -1); }   // mirror about the plot's middle
+    ctx.drawImage(tile.off, xOf(g.c0), yDown(g.t0), xOf(g.c1) - xOf(g.c0), yDown(g.t1) - yDown(g.t0));
+    ctx.restore();
+
+    // tile rows / columns inside the view
+    const tr0 = Math.max(0, Math.floor((view.t0 - g.t0) / (g.t1 - g.t0) * rows)), tr1 = Math.min(rows, Math.ceil((view.t1 - g.t0) / (g.t1 - g.t0) * rows));
+    const tc0 = Math.max(0, Math.floor((view.c0 - g.c0) / (g.c1 - g.c0) * cols)), tc1 = Math.min(cols, Math.ceil((view.c1 - g.c0) / (g.c1 - g.c0) * cols));
+    const hi = hover ? tileRow(hover.r) : -1, hj = hover ? tileCol(hover.c) : -1;
+
+    // bottom strip: max over the view's rows (grey when hovering), and the hovered row (blue)
+    const maxProf = new Float32Array(cols).fill(-Infinity);
+    for (let r = tr0; r < tr1; r++) for (let j = 0; j < cols; j++) { const v = vals[r * cols + j]; if (v > maxProf[j]) maxProf[j] = v; }
+    const rowProf = hi >= 0 ? vals.subarray(hi * cols, (hi + 1) * cols) : null;
+    const series = [{ v: maxProf, color: rowProf ? "#4a5361" : css("--accent") }];
+    if (rowProf) series.push({ v: rowProf, color: css("--accent") });
+    drawProfile(s, series, j => xOf(g.c0 + (j + 0.5) * (g.c1 - g.c0) / cols), cols, "h", dim, line);
+
+    // right strip: mean (in power) over the view's columns per row, or the hovered column
+    const meanProf = new Float32Array(rows).fill(NaN);
+    for (let r = 0; r < rows; r++) {
+      let acc = 0, n = 0;
+      for (let j = tc0; j < tc1; j++) { const v = vals[r * cols + j]; if (v === v) { acc += Math.pow(10, v / 10); n++; } }
+      if (n) meanProf[r] = 10 * Math.log10(acc / n);
+    }
+    let colProf = null;
+    if (hj >= 0) { colProf = new Float32Array(rows); for (let r = 0; r < rows; r++) colProf[r] = vals[r * cols + hj]; }
+    const tseries = [{ v: meanProf, color: colProf ? "#4a5361" : css("--accent") }];
+    if (colProf) tseries.push({ v: colProf, color: css("--accent") });
+    drawProfile(sd, tseries, r => yOf(g.t0 + (r + 0.5) * (g.t1 - g.t0) / rows), rows, "v", dim, line);
+  }
+
+  // marks
+  if (marks) {
+    // known RFI: shaded in the spectrum strip, ticks along the top of the waterfall
+    ctx.save();
+    for (const m of rfiMarks(fa, fb)) {
+      let x0 = xOf(chanOf(m.f0)), x1 = xOf(chanOf(m.f1));
+      if (x1 < x0) [x0, x1] = [x1, x0];
+      if (x1 - x0 < 1) { const xm = (x0 + x1) / 2; x0 = xm - 0.5; x1 = xm + 0.5; }
+      x0 = Math.max(x0, p.x); x1 = Math.min(x1, p.x + p.w);
+      if (x1 <= x0) continue;
+      ctx.fillStyle = "rgba(224,92,255,0.18)"; ctx.fillRect(x0, s.y, x1 - x0, s.h);
+      ctx.fillStyle = css("--rfi"); ctx.fillRect(x0, p.y - 6, Math.max(1.5, x1 - x0), 5);
+    }
+    ctx.restore();
+    // file boundaries (dotted) and triggers (dashed), across the waterfall
+    ctx.save(); ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]); ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    for (const f of meta.files || []) if (f.row0 > view.t0 && f.row0 < view.t1) {
+      const y = Math.round(yOf(f.row0)) + .5; ctx.beginPath(); ctx.moveTo(p.x, y); ctx.lineTo(p.x + p.w, y); ctx.stroke();
+    }
+    ctx.setLineDash([6, 4]); ctx.strokeStyle = css("--trig");
+    for (const t of visibleTriggers()) {
+      const y = Math.round(yOf(t.row)) + .5; ctx.beginPath(); ctx.moveTo(p.x, y); ctx.lineTo(p.x + p.w, y); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.fillStyle = css("--trig");
+    for (const t of visibleTriggers()) ctx.fillRect(p.x + p.w + 1, Math.round(yOf(t.row)) - 1, 5, 3);
+  }
+
+  // lost packets: a red tick for each spectrum with missing > 0
+  if (meta.missing && meta.missing.length) {
+    ctx.fillStyle = css("--bad");
+    const hRow = Math.max(1, p.h / (view.t1 - view.t0));
+    const r0 = Math.max(0, Math.floor(view.t0)), r1 = Math.min(meta.missing.length, Math.ceil(view.t1));
+    for (let r = r0; r < r1; r++) if (meta.missing[r] > 0) ctx.fillRect(p.x - 5, Math.min(yOf(r), yOf(r + 1)), 4, hRow);
+  }
+
+  // drift measurement
+  if (measure.length) {
+    ctx.save(); ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+    ctx.strokeStyle = css("--meas"); ctx.fillStyle = css("--meas"); ctx.lineWidth = 1.5;
+    const pts = measure.map(m => [xOf(m.c), yOf(m.r)]);
+    if (pts.length === 2) { ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[1][0], pts[1][1]); ctx.stroke(); }
+    for (const [x, y] of pts) { ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.stroke(); }
+    ctx.restore();
+  }
+
+  // axes
+  ctx.strokeStyle = line; ctx.strokeRect(p.x + .5, p.y + .5, p.w - 1, p.h - 1);
+  ctx.fillStyle = fg; ctx.font = "11px system-ui"; ctx.textAlign = "center";
+  const ft = niceTicks(fa, fb, Math.max(3, Math.floor(p.w / 110)));
+  const dec = Math.max(0, Math.ceil(-Math.log10(ft.step)));
+  for (const f of ft.ticks) {
+    const x = xOf(chanOf(f));
+    ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(x + .5, s.y + s.h); ctx.lineTo(x + .5, s.y + s.h + 4); ctx.stroke();
+    ctx.fillText(f.toFixed(dec), x, s.y + s.h + 16);
+  }
+  ctx.fillStyle = dim; ctx.fillText("frequency (MHz)", s.x + s.w / 2, s.y + s.h + 30);
+  const tt = niceTicks(view.t0 * meta.tsamp, view.t1 * meta.tsamp, Math.max(3, Math.floor(p.h / 50)));
+  ctx.textAlign = "right"; ctx.fillStyle = fg;
+  for (const sec of tt.ticks) {
+    const y = yOf(sec / meta.tsamp);
+    ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(p.x - 4, y + .5); ctx.lineTo(p.x, y + .5); ctx.stroke();
+    ctx.fillText(utc(unixOf(sec / meta.tsamp)).slice(11, 19), p.x - 8, y + 4);
+  }
+  // crosshair (through both strips)
+  if (inPlot(mouse)) {
+    ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(mouse.x + .5, p.y); ctx.lineTo(mouse.x + .5, s.y + s.h);
+    ctx.moveTo(p.x, mouse.y + .5); ctx.lineTo(sd.x + sd.w, mouse.y + .5); ctx.stroke();
+  }
+}
+// A profile strip. dir "h": values up, index along x (xs(i)); "v": values to the right, index along y (xs(i) = y).
+function drawProfile(rc, series, xs, n, dir, dim, line) {
+  let a = Infinity, b = -Infinity;
+  for (const s of series) for (let i = 0; i < n; i++) { const v = s.v[i]; if (isFinite(v)) { if (v < a) a = v; if (v > b) b = v; } }
+  if (!(b > a)) { a = 0; b = 1; }
+  ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.strokeRect(rc.x + .5, rc.y + .5, rc.w - 1, rc.h - 1);
+  ctx.save(); ctx.beginPath(); ctx.rect(rc.x, rc.y, rc.w, rc.h); ctx.clip();
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.beginPath();
+    let first = true;
+    for (let i = 0; i < n; i++) {
+      const v = s.v[i];
+      if (!isFinite(v)) { first = true; continue; }
+      const u = (v - a) / (b - a);
+      const x = dir === "h" ? xs(i) : rc.x + 3 + u * (rc.w - 8), y = dir === "h" ? rc.y + rc.h - 3 - u * (rc.h - 8) : xs(i);
+      if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.fillStyle = dim; ctx.font = "11px system-ui";
+  if (dir === "h") {
+    ctx.textAlign = "right";
+    ctx.fillText(b.toFixed(1) + " dB", rc.x - 6, rc.y + 10); ctx.fillText(a.toFixed(1) + " dB", rc.x - 6, rc.y + rc.h - 2);
+  } else {
+    ctx.textAlign = "left"; ctx.fillText(a.toFixed(1), rc.x + 2, rc.y + rc.h + 14);
+    ctx.textAlign = "right"; ctx.fillText(b.toFixed(1), rc.x + rc.w - 2, rc.y + rc.h + 14);
+  }
+}
+function updateReadout() {
+  const e = $("cursor");
+  if (!meta || !inPlot(mouse)) return;
+  const { c, r } = cursorData();
+  let val = "–";
+  if (tile) { const i = tileRow(r), j = tileCol(c); if (i >= 0 && j >= 0) val = shown(tile)[i * tile.geom.cols + j].toFixed(2) + " " + unit(); }
+  const row = Math.floor(r), miss = meta.missing && row >= 0 && row < meta.missing.length ? meta.missing[row] : 0;
+  let txt = `f ${freqOf(c).toFixed(6)} MHz   ch ${Math.floor(c)}   ${utc(unixOf(r), true)}   row ${row}   P ${val}`;
+  if (miss) txt += `   ${miss} packets lost`;
+  if ((meta.files || []).length > 1) {
+    const f = meta.files.filter(f => f.row0 <= row).pop();
+    if (f) txt += `   file ${f.path.split("/").pop()}`;
+  }
+  if ($("marks").checked) {
+    const p = plotRect(), rowsPerPx = (view.t1 - view.t0) / p.h, chPerPx = (view.c1 - view.c0) / p.w;
+    for (const t of visibleTriggers()) if (Math.abs(t.row - r) <= Math.max(1, 3 * rowsPerPx)) { txt += `   ◆ trigger ${utc(t.unix, true).slice(11)} ${t.text}`; break; }
+    const tol = 3 * chPerPx * Math.abs(meta.foff), f = freqOf(c);
+    for (const m of rfiMarks(f - tol, f + tol)) if (f >= m.f0 - tol && f <= m.f1 + tol) { txt += `   ◆ ${m.label}`; break; }
+  }
+  e.textContent = txt;
+}
+function updateMeasure() {
+  const e = $("measure");
+  if (!measure.length) { e.textContent = ""; return; }
+  if (measure.length === 1) { e.textContent = "drift: ctrl/⌘+click a second point"; return; }
+  const [a, b] = measure, df = (b.c - a.c) * meta.foff * 1e6, dt = (b.r - a.r) * meta.tsamp;
+  e.textContent = `Δf ${fmtHz(df)}   Δt ${dt.toFixed(2)} s   drift ${dt !== 0 ? (df / dt).toFixed(3) + " Hz/s" : "–"}` +
+                  `   (${((b.c - a.c) / ((b.r - a.r) || NaN)).toFixed(3)} ch/spectrum)`;
+}
+
+// ---- interaction ---------------------------------------------------------------------------------------
+function resetView() { view = { t0: 0, t1: meta.nrows, c0: 0, c1: meta.nchans }; scheduleFetch(0); }
+function clampView() {
+  const minC = Math.min(16, meta.nchans), minT = Math.min(1, meta.nrows);
+  let wC = clamp(view.c1 - view.c0, minC, meta.nchans), wT = clamp(view.t1 - view.t0, minT, meta.nrows);
+  view.c0 = clamp(view.c0, 0, meta.nchans - wC); view.c1 = view.c0 + wC;
+  view.t0 = clamp(view.t0, 0, meta.nrows - wT); view.t1 = view.t0 + wT;
+}
+cv.addEventListener("wheel", ev => {
+  if (!meta) return; ev.preventDefault();
+  const p = plotRect(), fx = clamp((ev.offsetX - p.x) / p.w, 0, 1), fy = clamp((ev.offsetY - p.y) / p.h, 0, 1);
+  const k = Math.exp(ev.deltaY * 0.0015);
+  if (!ev.altKey) { const c = view.c0 + fx * (view.c1 - view.c0), w = (view.c1 - view.c0) * k; view.c0 = c - fx * w; view.c1 = c + (1 - fx) * w; }
+  if (!ev.shiftKey) {
+    const ft = flipped() ? 1 - fy : fy, t = view.t0 + ft * (view.t1 - view.t0), w = (view.t1 - view.t0) * k;
+    view.t0 = t - ft * w; view.t1 = t + (1 - ft) * w;
+  }
+  clampView(); render(); scheduleFetch();
+}, { passive: false });
+cv.addEventListener("pointerdown", ev => {
+  if (!meta) return;
+  if (ev.ctrlKey || ev.metaKey) {                  // drift measurement point
+    mouse = { x: ev.offsetX, y: ev.offsetY };
+    if (!inPlot(mouse)) return;
+    if (measure.length >= 2) measure = [];
+    measure.push(cursorData());
+    updateMeasure(); render();
+    return;
+  }
+  cv.setPointerCapture(ev.pointerId); dragging = { x: ev.offsetX, y: ev.offsetY, v: { ...view } };
+});
+cv.addEventListener("pointermove", ev => {
+  mouse = { x: ev.offsetX, y: ev.offsetY };
+  if (dragging && meta) {
+    const p = plotRect();
+    const dc = -(ev.offsetX - dragging.x) / p.w * (dragging.v.c1 - dragging.v.c0), dt = (flipped() ? 1 : -1) * (ev.offsetY - dragging.y) / p.h * (dragging.v.t1 - dragging.v.t0);
+    view = { c0: dragging.v.c0 + dc, c1: dragging.v.c1 + dc, t0: dragging.v.t0 + dt, t1: dragging.v.t1 + dt };
+    clampView(); scheduleFetch(150);
+  }
+  render(); updateReadout();
+});
+cv.addEventListener("pointerup", () => { dragging = null; render(); });
+cv.addEventListener("pointerleave", () => { mouse = null; render(); });
+cv.addEventListener("dblclick", ev => meta && !(ev.ctrlKey || ev.metaKey) && resetView());
+["ifno", "stat", "flatten"].forEach(id => $(id).addEventListener("change", () => { tile = null; scheduleFetch(0); }));
+["norm", "marks"].forEach(id => $(id).addEventListener("change", () => { if (tile) tile.key = ""; render(); updateReadout(); }));
+$("cmap").addEventListener("change", () => { lut = buildLut($("cmap").value); if (tile) tile.key = ""; render(); });
+["lo", "hi"].forEach(id => $(id).addEventListener("change", () => {
+  $("lock").checked = true; levels = { lo: parseFloat($("lo").value), hi: parseFloat($("hi").value) }; if (tile) tile.key = ""; render();
+}));
+$("lock").addEventListener("change", () => { if (tile) tile.key = ""; render(); });
+for (const id of ["newest", "norm", "marks"]) {
+  try { const v = localStorage.getItem("lft3view." + id); if (v !== null) $(id).checked = v === "1"; } catch (e) { /* no storage */ }
+  $(id).addEventListener("change", () => { try { localStorage.setItem("lft3view." + id, $(id).checked ? "1" : "0"); } catch (e) { /* no storage */ } });
+}
+$("newest").addEventListener("change", () => { render(); updateReadout(); });
+$("reset").addEventListener("click", () => meta && resetView());
+$("file").addEventListener("change", () => openRun($("file").value));
+window.addEventListener("keydown", ev => {
+  if ((ev.target.tagName === "INPUT" && ev.target.type !== "checkbox") || ev.target.tagName === "SELECT" || !meta) return;
+  if (ev.key === "r") resetView();
+  if (ev.key === "Escape") { measure = []; updateMeasure(); render(); }
+});
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  render(); if (meta) scheduleFetch(200);
+}
+window.addEventListener("resize", resize);
+
+// ---- runs ----------------------------------------------------------------------------------------------
+// "rfsoc0/quicklook/rfsoc0_..._beam0 · 152.6 kHz · 12.0 min · 1 file · 0.00 GB": the directory tells the products
+// apart (fine spectra in spectra/<board>/, the coarse quick-look product in spectra/<board>/quicklook/)
+function runLabel(r) {
+  const name = r.id.replace(/^spectra\//, "").replace(/\.h5$/, ""), hours = r.nrows * r.tsamp / 3600;
+  const span = hours >= 1 ? hours.toFixed(1) + " h" : (hours * 60).toFixed(1) + " min";
+  const df = Math.abs(r.foff || 0) * 1e6, res = df >= 1e3 ? (df / 1e3).toFixed(1) + " kHz" : df.toFixed(df < 10 ? 2 : 0) + " Hz";
+  const gb = r.size / 1e9, size = gb >= 0.1 ? gb.toFixed(2) + " GB" : (r.size / 1e6).toFixed(1) + " MB";
+  return `${name} · ${res} · ${span} · ${r.files.length} file${r.files.length > 1 ? "s" : ""} · ${size}`;
+}
+function fillRuns(list) {
+  runs = list;
+  const sel = $("file"), cur = sel.value;
+  sel.innerHTML = "";
+  for (const r of runs) sel.add(new Option(runLabel(r), r.id));
+  if (cur && runs.some(r => r.id === cur)) sel.value = cur;
+}
+async function openRun(id) {
+  setStatus("opening…");
+  try { meta = await apiJson("/api/meta", { file: id }); } catch (e) { setStatus(e.message, true); return; }
+  $("file").value = meta.id;                       // a member file's path resolves to its run
+  const ifs = $("ifno"); ifs.innerHTML = "";
+  for (let i = 0; i < meta.nifs; i++) ifs.add(new Option(String(i), String(i)));
+  tile = null; measure = []; updateMeasure(); resetView();
+  document.title = meta.id.split("/").pop() + " – LFT3 viewer";
+  setStatus(meta.layout);
+}
+async function followLive() {
+  if (!$("live").checked || !meta) return;
+  try {
+    // a newer run of the same beam (after a re-sync) supersedes this one
+    fillRuns(await apiJson("/api/files"));
+    const beam = runBeam(meta.id), newer = runs.filter(r => runBeam(r.id) === beam && r.tstart > meta.tstart)
+      .sort((a, b) => b.tstart - a.tstart)[0];
+    if (newer) { await openRun(newer.id); return; }
+    const m = await apiJson("/api/meta", { file: meta.id });
+    if (m.nrows !== meta.nrows) {
+      const atEnd = view.t1 >= meta.nrows - 0.5, span = view.t1 - view.t0;
+      meta = m;
+      if (atEnd) { view.t1 = m.nrows; view.t0 = Math.max(0, m.nrows - span); }
+      clampView(); scheduleFetch(0);
+    }
+  } catch (e) { /* keep the current view */ }
+}
+async function init() {
+  resize();
+  try { fillRuns(await apiJson("/api/files")); } catch (e) { setStatus(e.message, true); return; }
+  await loadOverlays();
+  const want = params.get("file");
+  if (!runs.length) { setStatus("no FBH5 files under the data directory", true); return; }
+  if (want) {
+    await openRun(want);
+    if (!meta) { setStatus(`${want} not found; showing the newest run`, true); await openRun(runs[0].id); }
+  } else {
+    await openRun(runs[0].id);
+  }
+  setInterval(followLive, 5000);
+  setInterval(async () => { await loadOverlays(); render(); }, 30000);
+}
+// read-only hooks for automated UI tests (tools/viewer README)
+window.__lft3 = { plotRect, chanOf, rowOfUnix, get view() { return view; }, get meta() { return meta; } };
+init();
+</script>
+</body>
+</html>
