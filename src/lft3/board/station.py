@@ -10,7 +10,7 @@ hide the others:
 
 Multi-board time alignment: the firmware syncs on a software register write, so `sync()` releases all
 boards' writes from a barrier (spread typically ~ms over katcp). Sample-accurate alignment needs the
-PPS-armed sync requested in docs/firmware_requests.md #4.
+PPS-armed sync requested in docs/firmware_requests.md #3.
 """
 from __future__ import annotations
 

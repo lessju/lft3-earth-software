@@ -67,6 +67,7 @@ lft3-plot waterfall $(lft3-plot latest) --fmin 2400 --fmax 2425 --flatten
 | `docs/runtime.md` | How the real-time runtime is implemented, the design decisions behind it, performance and capacity |
 | `docs/monitoring_control.md` | RFSoC M&C: CLI, health checks, metrics, open decisions |
 | `docs/packet_format.md` | Channel and ADC packet formats as implemented |
+| `docs/sizing.md` | Backend sizing for the full station: GPUs, servers, RAM, storage (from the Spark measurements) |
 | `docs/architecture.md` | Original DGX Spark sizing and the rawspec plan for Hz resolution |
 | `docs/bringup.md` | Link → NIC → capture → receiver bring-up checklist |
 | `docs/firmware_requests.md` | Requested firmware changes (for the firmware developer) |

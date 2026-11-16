@@ -326,19 +326,19 @@ NIC itself drop packets before any of our code sees them. Leave headroom on the 
 * One 100G cable from a board lands on one half.
 * DAQIRI measured 199 Gb/s loss-free on two links.
 
-**Answer for 5 boards × 2 streams (10 streams, 20 beams, 608 Gb/s):**
+**Answer for the station, 6 boards × 1 link (6 streams, 12 dual-pol beams, 366 Gb/s):**
 
-* **One Spark per board** (2 direct-attached links = 2 streams, 4 beams, 122 Gb/s) is the configuration that is
-  known to work. It uses under half of the GPU, which leaves room for searches, as long as they are throttled
-  (decision 13). **5 Sparks.**
-* **Two boards per Spark** (4 streams) fits the compute (87 % GPU) but leaves little GPU or memory bandwidth for
-  searches. It needs 4 links into one Spark, i.e. a switch or breakout into its two 200G ports with flows steered
-  to all four PCIe halves (unverified), and ~76 GB of memory (ring 1.5 s, dump 1 s per link). **3 Sparks**
-  (4 + 4 + 2 streams).
+* **Two boards per Spark** (2 direct-attached links, one per QSFP port, 2 streams, 122 Gb/s) is known to work.
+  It uses under half of the GPU, which leaves room for searches as long as they are throttled (decision 13).
+  **3 Sparks.**
+* **Four boards per Spark** (4 streams) fits the compute (87 % GPU) but leaves little GPU or memory bandwidth for
+  searches. It needs 4 links into one Spark, i.e. a switch or breakout with flows steered to all four PCIe halves
+  (unverified), and ~76 GB of memory. **2 Sparks.**
+* Production servers with discrete GPUs, including the Hz-resolution and search load: `docs/sizing.md`.
 * 5 streams per Spark pass the synthetic test but leave no headroom on the memory bus for the NICs. 6 or more do
   not fit.
 * **At ~1 Hz resolution**, the FFT alone limits one Spark to about one full-band stream (decision 14). Hz
-  resolution for all 10 streams needs subbands (only part of the band at Hz resolution), more GPUs, or a
+  resolution for all 6 streams needs subbands (only part of the band at Hz resolution), more GPUs, or a
   dedicated search cluster fed with voltages.
 
 ## 7. Open items and next steps
@@ -348,7 +348,8 @@ NIC itself drop packets before any of our code sees them. Leave headroom on the 
   rawspec is too slow on GB10 (decision 14). Decide the band and output volume first (`docs/architecture.md`).
 * **Searches**: `lft3-search` (hyperseti on finished FBH5 files) works. Next: throttle it, or run it off the capture
   host (decision 13); a live search reading spectra from a ring instead of files; heimdall from coarse detection.
-* **Second link**: config entry ready (commented in `config/boards/rfsoc0.yaml`). Confirm its PCI function, UDP
+* **Second board on the same Spark** (its link on the other QSFP port; the config mechanism is the commented `link1`
+  entry in `config/boards/rfsoc0.yaml`, moved to that board's YAML). Confirm its PCI function, UDP
   port and source IP when it is cabled.
 * Time reference from a PPS-aligned sync (`docs/firmware_requests.md`).
 * Test whether the board honours 802.3x pause frames (decision 13); if it did, NIC buffer overflows would turn

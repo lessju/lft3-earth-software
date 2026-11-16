@@ -185,12 +185,12 @@ def spark_hw(out):
     for i, c in enumerate([0, 1, 2, 3, 4, 10, 11, 12, 13, 14]):
         box(ax, 3 + i * 4.9, 26.5, 4.5, 4, f"{c}", "cpu", fs=7, rad=0.2)
     ax.add_patch(Rectangle((33, 45.6), 1.6, 1.4, fc=C["warn"][0], ec=C["warn"][1]))
-    ax.text(35.2, 46.3, "link0 capture cores", fontsize=7, va="center", color="#b03a2e")
+    ax.text(35.2, 46.3, "capture cores, one board", fontsize=7, va="center", color="#b03a2e")
     group(ax, 57, 25, 52, 24, "Blackwell GPU (48 SMs)", "gpu")
     box(ax, 60, 29, 46, 13, "no copy to or from host memory:\nreads and writes the same DRAM", "gpu", fs=8)
     box(ax, 1, 13, 108, 8, "128 GB LPDDR5x unified memory · 273 GB/s, shared by CPU, GPU and NIC", "mem", fs=9,
         bold=True)
-    box(ax, 1, 1, 46, 8, "ConnectX-7 · 2 × QSFP (100 GbE links)", "net", fs=8)
+    box(ax, 1, 1, 46, 8, "ConnectX-7 · 2 × QSFP (one board each)", "net", fs=8)
     box(ax, 51, 1, 28, 8, "NVMe 3.7 TB", "store", fs=8)
     box(ax, 83, 1, 26, 8, "1 GbE to boards", "net", fs=8)
     for x in (24, 65, 96):
@@ -410,11 +410,11 @@ def dump(out):
 def processes(out):
     f, ax = fig(11, 4.0)
     box(ax, 1, 28, 20, 8, "lft3-pipeline", "cpu", bold=True)
-    group(ax, 26, 13, 83, 26, "containers (one set per link)", "plain", fs=8.5)
+    group(ax, 26, 13, 83, 26, "containers (one set per board)", "plain", fs=8.5)
     box(ax, 29, 24, 22, 9, "capture", "cpu")
     box(ax, 57, 24, 22, 9, "spectrometer", "reader")
     box(ax, 85, 24, 22, 9, "dump", "reader")
-    box(ax, 29, 15, 78, 6, "/dev/shm  ·  GPU ring", "mem", fs=8.5)
+    box(ax, 29, 15, 78, 6, "shared memory  ·  GPU ring", "mem", fs=8.5)
     for x in (40, 68, 96):
         arrow(ax, x, 24, x, 21, style="<|-|>", lw=1.1)
     arrow(ax, 21, 32, 29, 30)
@@ -537,6 +537,74 @@ def chart_memory(out):
     save(f, out, "c4_memory")
 
 
+def _sizing_model():
+    """The station sizing model of docs/sizing.md (one implementation, shared with the sizing study)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "sizing_figures"))
+    import sizing_model
+    return sizing_model
+
+
+SIZING_STAGES = [("capture", "capture + 1.2 kHz spectra", "#2f6db0"), ("chan", "fine channeliser", "#e07b39"),
+                 ("search", "drift search (hyperseti)", "#2e8b3a"), ("wide", "wideband search (estimate)", "#d4a017"),
+                 ("rfi", "RFI flagging (estimate)", "#c06c9a")]
+
+
+def _resolution_axis(ax, sm):
+    ps = list(range(7, 21))
+    ax.set_xticks(ps[::2], [sm.fmt_hz(sm.COARSE_HZ / 2 ** p) for p in ps[::2]], fontsize=7.5)
+    ax.set_xlim(7, 20)
+    ax.set_xlabel("fine channel width (FFT length 2^7 … 2^20)")
+    ax.grid(alpha=0.25)
+    ax.spines[["top", "right"]].set_visible(False)
+    return ps
+
+
+def chart_sizing_cost(out):
+    sm = _sizing_model()
+    f, ax = plt.subplots(figsize=(7.2, 3.3))
+    ps = _resolution_axis(ax, sm)
+    costs = [sm.stream_cost(p) for p in ps]
+    base = [0.0] * len(ps)
+    for k, label, c in SIZING_STAGES:
+        top = [b + cc["ge"][k] for b, cc in zip(base, costs)]
+        ax.fill_between(ps, base, top, color=c, alpha=0.9, lw=0, label=label)
+        base = top
+    cap = sm.RTX6000["bw"] / 273 * 0.7
+    for k in (1, 2):
+        ax.axhline(k * cap, color="#333333", ls="--", lw=1)
+        ax.text(7.15, k * cap + 0.15, f"{k} × RTX PRO 6000 at 70 % load", fontsize=7.5)
+    ax.plot([17], [costs[10]["uhf"]], "o", color="#1d2733", ms=5)
+    ax.text(16.85, costs[10]["uhf"] + 0.2, f"{costs[10]['uhf']:.2f}", fontsize=7.5, ha="right")
+    ax.set_ylim(0, 10)
+    ax.set_ylabel("GB10-equivalents per board")
+    ax.legend(fontsize=7, loc="upper left", bbox_to_anchor=(0, 0.78), frameon=False)
+    f.tight_layout()
+    save(f, out, "c6_sizing_cost")
+
+
+def chart_sizing_gpus(out):
+    sm = _sizing_model()
+    f, ax = plt.subplots(figsize=(7.2, 3.0))
+    ps = _resolution_axis(ax, sm)
+    for nt, c in ((16, "#2f6db0"), (32, "#e07b39"), (64, "#2e8b3a")):
+        ax.step(ps, [sm.gpus(sm.stream_cost(p, nt=nt)) for p in ps], where="mid", color=c, lw=2,
+                label=f"full band, {nt} spectra × 10 s per search")
+    ax.step(ps, [sm.gpus(sm.stream_cost(p, nt=32, frac=0.25)) for p in ps], where="mid", color="#6b3fa0", lw=2,
+            ls=":", label="¼ of the band at fine resolution, 32 spectra")
+    ax.set_yscale("log", base=2)
+    ax.set_yticks([1, 2, 4, 8, 16, 32, 64])
+    ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.set_ylabel("RTX PRO 6000 for 6 boards")
+    # legend with colour patches: svglib draws matplotlib's legend line handles in black
+    from matplotlib.patches import Patch
+    handles = [Patch(color=c, label=f"full band, {nt} spectra × 10 s per search")
+               for nt, c in ((16, "#2f6db0"), (32, "#e07b39"), (64, "#2e8b3a"))]
+    handles.append(Patch(color="#6b3fa0", label="¼ of the band at fine resolution, 32 spectra (dotted)"))
+    ax.legend(handles=handles, fontsize=7, frameon=False, loc="upper left")
+    f.tight_layout()
+    save(f, out, "c7_sizing_gpus")
+
+
 def chart_spectra(out):
     """Real spectra from the soak test (data extracted by spectrum_data.py into data/soak_spectrum.npz)."""
     import numpy as np
@@ -589,7 +657,7 @@ def chart_spectra(out):
 
 ALL = [system_overview, signal_chain, packet_layout, freq_map, spark_hw, data_movement, packet_lifetime, assembler,
        scatter, ring, finespec, warp_fft, dump, processes, bringup, viewer, chart_kernels, chart_capacity,
-       chart_rawspec, chart_memory, chart_spectra]
+       chart_rawspec, chart_memory, chart_spectra, chart_sizing_cost, chart_sizing_gpus]
 
 if __name__ == "__main__":
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "figures")

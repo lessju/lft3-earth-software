@@ -86,9 +86,8 @@ The packet holding the trigger instant is s = (ddr_size + 1 − ddr_read_delay) 
 1. ~~Endianness, beam/ADC order, I/Q order.~~ Settled by listener.py (big-endian, index 0 first, I high).
    The RF sign of the spectrum (whether k ascending = RF ascending for a negative NCO) still needs a test tone.
 2. ~~Telling the two packet types apart.~~ Settled: dst port 60000 (channel) vs 40000 (ADC).
-3. **A contiguous packet sequence number** for the channel stream. word0 >> 3 = 8t + b skips 2 of every 8 values.
-   A 32-bit `seq = (6t + b) mod 2^32` in an optional header word would let the ConnectX-7 hardware reorder
-   (DAQIRI) place packets in time order and make loss accounting trivial. Suggested: top half of word 4.
+3. ~~A contiguous packet sequence number.~~ Not needed: the capture assembler orders packets and counts loss from
+   (t, b) in word 0.
 4. ADC header: the 64-bit t_trig starts at byte offset 4 (not 8-byte aligned). This is harmless for software, but confirm it is intended.
 5. **VHF board numbers are inconsistent:**
    * *Data Rates* uses 1096 channels/packet, 6576 channels, 8874-B frames and 64.2 Gb/s for the VHF board.

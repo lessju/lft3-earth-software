@@ -1,0 +1,522 @@
+<title>LFT3-Earth Backend Sizing</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: instrument-panel calculator. Controls column left, readouts + charts right; one column on phones. */
+:root {
+  --bg: #f6f7f8;
+  --panel: #ffffff;
+  --ink: #12161b;
+  --ink-2: #4a525c;
+  --ink-3: #7a828c;
+  --rule: #dde1e6;
+  --grid: #e8ebee;
+  --accent: #1f5fb4;
+  --accent-soft: #e4edf9;
+  --warn: #b25e00;
+  --bad: #c0362c;
+  --good: #1d7a46;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111418; --panel: #191d22; --ink: #eef1f4; --ink-2: #b4bcc6; --ink-3: #87909b;
+  --rule: #2c323a; --grid: #242a31; --accent: #6aa5ef; --accent-soft: #1d2b3d;
+  --warn: #e39b3c; --bad: #ef6b60; --good: #4cc584;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #191d22; --ink: #eef1f4; --ink-2: #b4bcc6; --ink-3: #87909b;
+  --rule: #2c323a; --grid: #242a31; --accent: #6aa5ef; --accent-soft: #1d2b3d;
+  --warn: #e39b3c; --bad: #ef6b60; --good: #4cc584;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+  color-scheme: dark; }
+
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 48px; }
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 20px; }
+header h1 { font: 600 28px/1.15 var(--f-display); margin: 0; letter-spacing: 0.005em; text-wrap: balance; }
+header p { margin: 6px 0 0; color: var(--ink-2); max-width: 75ch; }
+.mono, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 880px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+.controls { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; display: grid; gap: 14px; }
+.controls h2, .card h2 { font: 600 13px/1.2 var(--f-display); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-2); margin: 0; }
+.ctl { display: grid; gap: 4px; }
+.ctl label { display: flex; justify-content: space-between; gap: 8px; font-weight: 500; }
+.ctl label .val { font-family: var(--f-mono); color: var(--accent); font-weight: 500; white-space: nowrap; }
+.ctl small { color: var(--ink-3); font-size: 12px; }
+.ctl input[type=range] { width: 100%; accent-color: var(--accent); }
+.ctl select { width: 100%; font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--rule); background: var(--bg); color: var(--ink); }
+.seg { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.seg button { flex: 1; font: 500 13px var(--f-body); padding: 6px 4px; border: 0; background: transparent; color: var(--ink-2); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); }
+.seg button:focus-visible, .ctl input:focus-visible, .ctl select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sep { border-top: 1px solid var(--rule); padding-top: 12px; display: grid; gap: 14px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.presets button { font: 500 12px var(--f-body); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--rule); background: transparent; color: var(--ink-2); cursor: pointer; }
+.presets button:hover { border-color: var(--accent); color: var(--accent); }
+
+.main { display: grid; gap: 20px; min-width: 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 14px; display: grid; gap: 2px; align-content: start; }
+.tile .k { font: 500 12px var(--f-body); color: var(--ink-2); }
+.tile .v { font: 500 26px/1.15 var(--f-mono); font-variant-numeric: tabular-nums; }
+.tile .s { font-size: 12px; color: var(--ink-3); }
+.pill { display: inline-flex; align-items: center; gap: 5px; font: 500 12px var(--f-body); padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; width: fit-content; }
+.pill.ok { color: var(--good); } .pill.tight { color: var(--warn); } .pill.no { color: var(--bad); }
+
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; display: grid; gap: 10px; min-width: 0; }
+.card .sub { color: var(--ink-2); margin: 0; font-size: 13px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.legend i.line { height: 3px; border-radius: 2px; }
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { fill: var(--ink-2); font: 11px var(--f-mono); }
+.chart .axis-title { fill: var(--ink-3); font: 11px var(--f-body); }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 8px 10px; font: 12px/1.45 var(--f-body); color: var(--ink); box-shadow: 0 4px 16px rgba(0,0,0,.12); min-width: 170px; z-index: 5; }
+.tip b { font-family: var(--f-mono); font-weight: 500; }
+.tip .row { display: flex; justify-content: space-between; gap: 12px; }
+.tip .row span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.tip i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+.tbl-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 600 12px var(--f-body); color: var(--ink-2); }
+td.n { font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.tag { font: 500 11px var(--f-body); padding: 0 6px; border-radius: 4px; border: 1px solid var(--rule); color: var(--ink-2); white-space: nowrap; }
+.tag.m { color: var(--good); border-color: currentColor; } .tag.d { color: var(--accent); border-color: currentColor; } .tag.e { color: var(--warn); border-color: currentColor; }
+.note { color: var(--ink-2); font-size: 13px; margin: 0; max-width: 90ch; }
+.warnline { color: var(--warn); font-size: 13px; margin: 0; }
+.warnline[hidden] { display: none !important; }
+footer { color: var(--ink-3); font-size: 12px; }
+@media (prefers-reduced-motion: no-preference) { .tile .v { transition: color .2s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>LFT3-Earth backend sizing</h1>
+    <p>How much GPU, RAM and disk the 6-board station (5 UHF + 1 VHF, one 100 GbE stream each) needs, as a function of
+      fine channel resolution and the narrowband drift search. Costs are measured on the DGX Spark (GB10) and scaled to
+      other GPUs by memory bandwidth. Details: <span class="mono">docs/sizing.md</span>.</p>
+  </header>
+
+  <div class="layout">
+    <form class="controls" id="controls" onsubmit="return false">
+      <h2>Fine channeliser</h2>
+      <div class="presets" aria-label="Presets">
+        <button type="button" data-preset="interim">Interim 1.2 kHz</button>
+        <button type="button" data-preset="hz">Hz, full band</button>
+        <button type="button" data-preset="quarter">Hz, ¼ band</button>
+      </div>
+      <div class="ctl">
+        <label for="nf"><span>FFT length N<sub>f</sub></span> <span class="val" id="nf-v"></span></label>
+        <input type="range" id="nf" min="7" max="20" step="1" value="17">
+        <small id="nf-s"></small>
+      </div>
+      <div class="ctl">
+        <label for="frac">Band at fine resolution <span class="val" id="frac-v"></span></label>
+        <input type="range" id="frac" min="5" max="100" step="5" value="100">
+        <small>Of the 937.5 MHz per stream; the rest stays at 1.2 kHz</small>
+      </div>
+      <div class="ctl">
+        <label>FFT implementation</label>
+        <div class="seg" role="group" aria-label="FFT implementation">
+          <button type="button" id="impl-fused" aria-pressed="true">Fused</button>
+          <button type="button" id="impl-unfused" aria-pressed="false">Separate passes</button>
+        </div>
+      </div>
+
+      <div class="sep">
+        <h2>Drift search (hyperseti)</h2>
+        <div class="ctl">
+          <label for="tsamp">Integration per spectrum <span class="val" id="tsamp-v"></span></label>
+          <input type="range" id="tsamp" min="0" max="7" step="1" value="3">
+          <small id="tsamp-s"></small>
+        </div>
+        <div class="ctl">
+          <label for="nt">Spectra per search window <span class="val" id="nt-v"></span></label>
+          <input type="range" id="nt" min="3" max="7" step="1" value="5">
+          <small id="nt-s"></small>
+        </div>
+        <div class="ctl">
+          <label for="dd">Max drift rate <span class="val" id="dd-v"></span></label>
+          <input type="range" id="dd" min="0" max="10" step="1" value="5">
+          <small id="dd-s"></small>
+        </div>
+        <div class="ctl">
+          <label>Search buffer precision</label>
+          <div class="seg" role="group" aria-label="Search buffer precision">
+            <button type="button" id="prec-16" aria-pressed="true">fp16</button>
+            <button type="button" id="prec-32" aria-pressed="false">fp32</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sep">
+        <h2>Hardware</h2>
+        <div class="ctl">
+          <label for="gpu">GPU</label>
+          <select id="gpu"></select>
+          <small id="gpu-s"></small>
+        </div>
+        <div class="ctl">
+          <label for="util">Plan GPUs to at most <span class="val" id="util-v"></span></label>
+          <input type="range" id="util" min="50" max="95" step="5" value="70">
+        </div>
+        <div class="ctl">
+          <label for="bps">Boards per server <span class="val" id="bps-v"></span></label>
+          <input type="range" id="bps" min="1" max="6" step="1" value="2">
+        </div>
+        <div class="ctl">
+          <label for="raw">Raw-beam buffer <span class="val" id="raw-v"></span></label>
+          <input type="range" id="raw" min="1" max="60" step="1" value="10">
+          <small>Host RAM, 7.5 GB per second per stream</small>
+        </div>
+      </div>
+
+      <div class="sep">
+        <h2>Unmeasured inputs</h2>
+        <div class="ctl">
+          <label for="wb">Wideband search, per stream <span class="val" id="wb-v"></span></label>
+          <input type="range" id="wb" min="0" max="20" step="1" value="6">
+          <small>GB10-equivalents (estimate 0.1–1)</small>
+        </div>
+        <div class="ctl">
+          <label for="kf">Search kernel speed-up <span class="val" id="kf-v"></span></label>
+          <input type="range" id="kf" min="0" max="4" step="1" value="0">
+          <small>vs hyperseti's brute-force kernel as measured</small>
+        </div>
+      </div>
+    </form>
+
+    <div class="main">
+      <div class="tiles" id="tiles"></div>
+      <p class="warnline" id="warn" hidden></p>
+
+      <section class="card" aria-labelledby="c1-h">
+        <h2 id="c1-h">Cost per UHF stream vs fine resolution</h2>
+        <p class="sub">GPU time in GB10-equivalents (1 = one DGX Spark GPU), stacked by stage. Dashed lines: what the selected GPU
+          can carry at the planning limit. The marker is the current setting.</p>
+        <div class="legend" id="lg1"></div>
+        <div class="chart" id="c1"></div>
+      </section>
+
+      <section class="card" aria-labelledby="c2-h">
+        <h2 id="c2-h">GPUs for the station vs fine resolution</h2>
+        <p class="sub" id="c2-sub"></p>
+        <div class="legend" id="lg2"></div>
+        <div class="chart" id="c2"></div>
+      </section>
+
+      <section class="card" aria-labelledby="t-h">
+        <h2 id="t-h">Breakdown at the current setting</h2>
+        <div class="tbl-wrap"><table id="tbl"></table></div>
+        <p class="note">Basis: <span class="tag m">measured</span> on the GB10 with this code;
+          <span class="tag d">derived</span> from a measurement by scaling; <span class="tag e">estimate</span> not yet measured.
+          All stages are memory-bandwidth bound, so GPUs are compared by memory bandwidth (GB10 = 273 GB/s).
+          The VHF stream counts at half processing (2 of its 4 inputs are zero padding).</p>
+      </section>
+      <footer>Model from measurements of 2026-11-13/14: runtime capacity benchmark, cuFFT length sweep, hyperseti dedoppler benchmark
+        (<span class="mono">pipeline/bench/search/bench_hyperseti.py</span>). Prices and GPU specs: vendor pages, Nov 2026, approximate.</footer>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+const COARSE_HZ = 152587.890625, NCH = 6144, BEAMS = 2, RAW_GBS = 7.5;
+// cuFFT length sweep on GB10 (GE per stream = fraction of GB10 for 3.75 GS/s), FFT-only and with separate convert/detect/accumulate
+const FFT_ONLY = {7:.283,8:.278,9:.280,10:.274,11:.273,12:.273,13:.272,14:.276,15:.641,16:.646,17:.627,18:.643,19:.629,20:.629};
+const UNFUSED  = {7:2.728,8:2.312,9:2.118,10:2.027,11:1.981,12:1.979,13:1.986,14:1.981,15:2.349,16:2.343,17:2.323,18:2.335,19:2.334,20:2.328};
+const WARP_GE = 0.045;           // measured warp kernel, 64-256 points, int8 in, fused detect/accumulate
+const CALLBACK_GE = 0.10;        // estimate: detect + accumulate traffic added by cuFFT callbacks
+const CAPTURE_GE = 0.15;         // measured: capture, scatter, 1.2 kHz spectra, quick-look
+const RFI_GE = 0.05;             // estimate, full band
+// hyperseti dedoppler seconds per (channel x spectrum x trial) on GB10, measured at nt 16/32/64
+const KCELL = [[16, 5.28e-11], [32, 3.25e-11], [64, 2.78e-11]];
+const GPUS = [
+  {id:"rtx6000", name:"RTX PRO 6000 Blackwell Server", bw:1597, mem:96, price:"~$8–14k"},
+  {id:"rtx5000-72", name:"RTX PRO 5000 Blackwell 72 GB", bw:1344, mem:72, price:"~$6–8k"},
+  {id:"rtx5000", name:"RTX PRO 5000 Blackwell 48 GB", bw:1344, mem:48, price:"~$5–7k"},
+  {id:"rtx4500", name:"RTX PRO 4500 Blackwell", bw:896, mem:32, price:"~$3k"},
+  {id:"l40s", name:"L40S", bw:864, mem:48, price:"~$7–9k"},
+  {id:"l4", name:"L4", bw:300, mem:24, price:"~$2.5k"},
+  {id:"gb10", name:"DGX Spark (GB10)", bw:273, mem:100, price:"~$4k per Spark"},
+];
+const STAGES = [
+  {k:"capture", label:"Capture + 1.2 kHz spectra", c:"--s1"},
+  {k:"chan", label:"Fine channeliser", c:"--s2"},
+  {k:"search", label:"Drift search", c:"--s3"},
+  {k:"wide", label:"Wideband search", c:"--s4"},
+  {k:"rfi", label:"RFI flagging", c:"--s5"},
+];
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const st = { impl: "fused", prec: 2 };
+
+// slider mappings
+const TSAMPS = [1, 2, 5, 10, 20, 30, 60, 120]; const tsampOf = v => TSAMPS[v];
+const DDS = [0.1, 0.25, 0.5, 1, 2, 4, 10, 25, 50, 100, 200]; const ddOf = v => DDS[v];
+const fmtHz = hz => hz >= 1000 ? (hz / 1000).toFixed(2) + " kHz" : hz >= 10 ? hz.toFixed(1) + " Hz" : hz.toFixed(2) + " Hz";
+const fmtT = s => s >= 60 ? (s / 60).toFixed(s >= 600 ? 0 : 1) + " min" : s.toFixed(s < 10 ? 1 : 0) + " s";
+const fmtB = gb => gb >= 1000 ? (gb / 1000).toFixed(2) + " TB" : gb >= 10 ? gb.toFixed(0) + " GB" : gb.toFixed(1) + " GB";
+
+function kcell(nt) {
+  const x = Math.log2(nt);
+  const p = KCELL.map(([n, k]) => [Math.log2(n), Math.log(k)]);
+  let i = x <= p[1][0] ? 0 : 1;
+  const [x0, y0] = p[i], [x1, y1] = p[i + 1];
+  const t = Math.min(Math.max((x - x0) / (x1 - x0), -1), 2);
+  return Math.exp(y0 + t * (y1 - y0));
+}
+function trials(nt, tsamp, df, dd) {
+  const up = dd * nt * tsamp / df;   // drift range in channels over the window
+  if (up < 1) return 1;
+  const side = up <= nt ? up : nt * (1 + Math.log2(up / nt));
+  return 2 * Math.round(side) + 1;
+}
+function chanGE(p) {
+  if (st.impl === "unfused") return UNFUSED[p];
+  if (p <= 8) return WARP_GE;
+  return FFT_ONLY[p] + CALLBACK_GE;
+}
+
+function model(o) {
+  const nf = 2 ** o.p, df = COARSE_HZ / nf, tfft = nf / COARSE_HZ;
+  const tsamp = Math.max(o.tsamp, tfft);
+  const nch = BEAMS * NCH * nf * o.frac;              // Stokes-I fine channels per stream at fine resolution
+  const ntr = trials(o.nt, tsamp, df, o.dd);
+  const search = kcell(o.nt) * nch * ntr / tsamp / o.kf;
+  const ge = { capture: CAPTURE_GE, chan: chanGE(o.p) * o.frac, search, wide: o.wb, rfi: RFI_GE * o.frac };
+  const uhf = Object.values(ge).reduce((a, b) => a + b, 0);
+  const vhf = CAPTURE_GE + 0.5 * (uhf - CAPTURE_GE);
+  const g = GPUS.find(x => x.id === o.gpu), gge = g.bw / 273, cap = gge * o.util;
+  // GPU memory per stream: corner-turn ring on GPU (>= 2 s, >= 2 FFT lengths), accumulator + output buffer, workspace
+  const accGB = nch * 4 / 1e9;
+  const gmem = Math.max(2, 2 * tfft) * RAW_GBS + 2 * accGB + 3;
+  let spg = Math.min(Math.floor(cap / uhf), Math.floor((g.mem * 0.9) / gmem));
+  let gpus, perStream = 1;
+  if (spg >= 1) gpus = Math.ceil((5 + vhf / uhf) / spg);
+  else { perStream = Math.max(Math.ceil(uhf / cap), Math.ceil(gmem / (g.mem * 0.9))); gpus = 5 * perStream + Math.max(Math.ceil(vhf / cap), Math.ceil(gmem / (g.mem * 0.9))); }
+  const searchBufGB = 1.5 * o.nt * nch * o.prec / 1e9;
+  const ramStream = searchBufGB + o.raw * RAW_GBS;
+  const ramServer = o.bps * ramStream + 64;
+  const specTBday = nch * 4 / tsamp / 1.43 * 86400 / 1e12 * 5.5;
+  return { nf, df, tfft, tsamp, nch, ntr, ge, uhf, vhf, g, gge, cap, gmem, spg, perStream, gpus,
+    station: 5 * uhf + vhf, searchBufGB, ramStream, ramServer, specTBday, window: o.nt * tsamp };
+}
+
+function read() {
+  return { p: +$("nf").value, frac: +$("frac").value / 100, tsamp: tsampOf(+$("tsamp").value), nt: 2 ** +$("nt").value,
+    dd: ddOf(+$("dd").value), gpu: $("gpu").value, util: +$("util").value / 100, bps: +$("bps").value,
+    raw: +$("raw").value, wb: +$("wb").value / 20, kf: 2 ** +$("kf").value, prec: st.prec };
+}
+
+// ---------- SVG helpers
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+function niceMax(v) { const e = 10 ** Math.floor(Math.log10(v)); const m = v / e; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * e; }
+const PS = []; for (let p = 7; p <= 20; p++) PS.push(p);
+
+function frame(host, W, H, M, ymax, yfmt, ytitle, logTicks) {
+  host.innerHTML = "";
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" }, host);
+  const x = p => M.l + (p - 7) / 13 * (W - M.l - M.r);
+  const y = logTicks
+    ? v => H - M.b - Math.log2(Math.max(v, 1)) / Math.log2(ymax) * (H - M.t - M.b)
+    : v => H - M.b - v / ymax * (H - M.t - M.b);
+  const tv = logTicks || [0, 1, 2, 3, 4, 5].map(i => ymax * i / 5);
+  for (const v of tv) {
+    el("line", { x1: M.l, x2: W - M.r, y1: y(v), y2: y(v), stroke: css("--grid"), "stroke-width": 1 }, svg);
+    const t = el("text", { x: M.l - 8, y: y(v) + 4, "text-anchor": "end" }, svg); t.textContent = yfmt(v);
+  }
+  for (const p of PS) {
+    if ((p - 7) % 2) continue;
+    const t = el("text", { x: x(p), y: H - M.b + 16, "text-anchor": "middle" }, svg); t.textContent = fmtHz(COARSE_HZ / 2 ** p);
+    const t2 = el("text", { x: x(p), y: H - M.b + 30, "text-anchor": "middle", style: "fill:var(--ink-3)" }, svg); t2.textContent = "2^" + p;
+  }
+  el("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, stroke: css("--ink-3"), "stroke-width": 1 }, svg);
+  const at = el("text", { x: M.l, y: M.t - 10, class: "axis-title" }, svg); at.textContent = ytitle;
+  const xt = el("text", { x: W - M.r, y: H - 4, "text-anchor": "end", class: "axis-title" }, svg); xt.textContent = "fine channel width  ·  FFT length";
+  return { svg, x, y };
+}
+
+function hover(host, svg, x, M, W, H, html) {
+  const tip = document.createElement("div"); tip.className = "tip"; tip.hidden = true; host.appendChild(tip);
+  const cross = el("line", { y1: M.t, y2: H - M.b, stroke: css("--ink-3"), "stroke-dasharray": "3 3", visibility: "hidden" }, svg);
+  const hit = el("rect", { x: M.l, y: M.t, width: W - M.l - M.r, height: H - M.t - M.b, fill: "transparent" }, svg);
+  const move = ev => {
+    const r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width;
+    const p = Math.min(20, Math.max(7, Math.round(7 + (sx - M.l) / (W - M.l - M.r) * 13)));
+    cross.setAttribute("x1", x(p)); cross.setAttribute("x2", x(p)); cross.setAttribute("visibility", "visible");
+    tip.innerHTML = html(p); tip.hidden = false;
+    const px = x(p) * r.width / W, w = tip.offsetWidth;
+    tip.style.left = (px + 14 + w > r.width ? px - 14 - w : px + 14) + "px"; tip.style.top = "8px";
+  };
+  hit.addEventListener("pointermove", move); hit.addEventListener("pointerdown", move);
+  hit.addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+}
+
+function chart1(o) {
+  const host = $("c1"), W = 760, H = 344, M = { l: 52, r: 16, t: 28, b: 58 };
+  const rows = PS.map(p => model({ ...o, p }));
+  const capLine = rows[0].cap;
+  const cur0 = rows[o.p - 7];
+  const ymax = niceMax(Math.max(cur0.uhf * 1.6, capLine * 2.15, rows[0].uhf * 1.3));
+  const { svg, x, y } = frame(host, W, H, M, ymax, v => v.toFixed(ymax < 2 ? 2 : v < 1 ? 1 : 0), "GB10-equivalents per stream");
+  const clipId = "clip1";
+  const defs = el("defs", {}, svg), cp = el("clipPath", { id: clipId }, defs);
+  el("rect", { x: M.l, y: M.t, width: W - M.l - M.r, height: H - M.t - M.b }, cp);
+  const g = el("g", { "clip-path": `url(#${clipId})` }, svg);
+  let base = rows.map(() => 0);
+  for (const s of STAGES) {
+    const top = rows.map((r, i) => base[i] + r.ge[s.k]);
+    let d = "M" + PS.map((p, i) => `${x(p)},${y(top[i])}`).join("L");
+    d += "L" + PS.slice().reverse().map((p, j) => { const i = PS.length - 1 - j; return `${x(p)},${y(base[i])}`; }).join("L") + "Z";
+    el("path", { d, fill: css(s.c), "fill-opacity": 0.85, stroke: css("--panel"), "stroke-width": 1.5, "stroke-linejoin": "round" }, g);
+    base = top;
+  }
+  const off = rows.findIndex(r => r.uhf > ymax);
+  if (off >= 0) { const t = el("text", { x: x(PS[off]) - 6, y: M.t + 12, "text-anchor": "end", style: "fill:var(--ink-3)" }, svg); t.textContent = "off scale →"; }
+  for (let k = 1; k <= 2 && k * capLine <= ymax; k++) {
+    el("line", { x1: M.l, x2: W - M.r, y1: y(k * capLine), y2: y(k * capLine), stroke: css("--ink"), "stroke-width": 1.5, "stroke-dasharray": "6 4" }, svg);
+    const t = el("text", { x: M.l + 6, y: y(k * capLine) - 6, "text-anchor": "start", style: "fill:var(--ink)" }, svg);
+    t.textContent = `${k} × ${rows[0].g.name.replace(" Blackwell", "")} at ${Math.round(o.util * 100)} %`;
+  }
+  const cur = rows[o.p - 7];
+  el("circle", { cx: x(o.p), cy: y(cur.uhf), r: 5.5, fill: css("--ink"), stroke: css("--panel"), "stroke-width": 2 }, svg);
+  const lt = el("text", { x: x(o.p), y: y(cur.uhf) - 10, "text-anchor": o.p > 17 ? "end" : "middle", style: "fill:var(--ink);font-weight:500" }, svg);
+  lt.textContent = cur.uhf.toFixed(2);
+  hover(host, svg, x, M, W, H, p => {
+    const r = rows[p - 7];
+    return `<div><b>${fmtHz(r.df)}</b> · N<sub>f</sub> 2^${p} · window ${fmtT(r.window)}</div>` +
+      STAGES.slice().reverse().map(s => `<div class="row"><span><i style="background:${css(s.c)}"></i>${s.label}</span><b>${r.ge[s.k].toFixed(2)}</b></div>`).join("") +
+      `<div class="row"><span>Total per stream</span><b>${r.uhf.toFixed(2)}</b></div>`;
+  });
+}
+
+const NT_SERIES = [{ nt: 16, c: "--s1" }, { nt: 32, c: "--s2" }, { nt: 64, c: "--s3" }];
+function chart2(o) {
+  const host = $("c2"), W = 760, H = 314, M = { l: 52, r: 16, t: 28, b: 58 };
+  const data = NT_SERIES.map(s => ({ ...s, rows: PS.map(p => model({ ...o, p, nt: s.nt })) }));
+  const top = Math.max(8, ...data.flatMap(d => d.rows.map(r => r.gpus)));
+  const ymax = 2 ** Math.ceil(Math.log2(top * 1.15));
+  const ticks = []; for (let v = 1; v <= ymax; v *= 2) ticks.push(v);
+  const { svg, x, y } = frame(host, W, H, M, ymax, v => v.toFixed(0), `${GPUS.find(g => g.id === o.gpu).name} count (log scale)`, ticks);
+  for (const d of data) {
+    let path = "";
+    d.rows.forEach((r, i) => { const p = PS[i]; path += (i ? `L${x(p)},${y(d.rows[i - 1].gpus)}L` : "M") + `${x(p)},${y(r.gpus)}`; });
+    el("path", { d: path, fill: "none", stroke: css(d.c), "stroke-width": 2.5, "stroke-linejoin": "round" }, svg);
+  }
+  const curNt = data.find(d => d.nt === o.nt);
+  const cur = model(o);
+  el("circle", { cx: x(o.p), cy: y(cur.gpus), r: 5.5, fill: curNt ? css(curNt.c) : css("--ink"), stroke: css("--panel"), "stroke-width": 2 }, svg);
+  const last = data.map(d => ({ d, v: d.rows[d.rows.length - 1].gpus }));
+  hover(host, svg, x, M, W, H, p =>
+    `<div><b>${fmtHz(COARSE_HZ / 2 ** p)}</b> · N<sub>f</sub> 2^${p}</div>` +
+    data.map(d => { const r = d.rows[p - 7]; return `<div class="row"><span><i style="background:${css(d.c)}"></i>${d.nt} spectra (${fmtT(d.nt * r.tsamp)})</span><b>${r.gpus}</b></div>`; }).join(""));
+  $("c2-sub").textContent = `Number of ${cur.g.name} cards for 6 streams at ${Math.round(o.util * 100)} % planned load, for three search-window lengths ` +
+    `(${o.tsamp} s per spectrum, ±${o.dd} Hz/s). Below about 1 Hz the GPU memory and the drift search take over.`;
+  void last;
+}
+
+function legends() {
+  $("lg1").innerHTML = STAGES.map(s => `<span><i style="background:var(${s.c})"></i>${s.label}</span>`).join("") +
+    `<span><i class="line" style="background:var(--ink)"></i>GPU capacity (dashed)</span>`;
+  $("lg2").innerHTML = NT_SERIES.map(s => `<span><i class="line" style="background:var(${s.c})"></i>${s.nt} spectra per window</span>`).join("");
+}
+
+function tiles(m, o) {
+  const fit = m.spg >= 2 ? ["ok", `${m.spg} streams per GPU`] : m.spg === 1 ? [m.uhf / m.cap > 0.85 ? "tight" : "ok", "1 stream per GPU"] : ["no", `${m.perStream} GPUs per stream`];
+  const servers = Math.ceil(6 / o.bps);
+  const T = [
+    { k: "Per UHF stream", v: m.uhf.toFixed(2), s: `GB10-equivalents · station ${m.station.toFixed(1)}` },
+    { k: `GPUs (${m.g.name.replace(" Blackwell", "")})`, v: m.gpus, s: `<span class="pill ${fit[0]}">${fit[1]}</span>` },
+    { k: "Load per GPU", v: Math.round((m.spg >= 1 ? m.spg * m.uhf : m.uhf / m.perStream) / m.gge * 100) + " %", s: `limit ${Math.round(o.util * 100)} % · ${m.g.price}` },
+    { k: "GPU memory per stream", v: fmtB(m.gmem), s: `of ${m.g.mem} GB per card` },
+    { k: `Host RAM per server`, v: fmtB(m.ramServer), s: `${o.bps} board${o.bps > 1 ? "s" : ""} · ${servers} server${servers > 1 ? "s" : ""}` },
+    { k: "Fine spectra if all kept", v: m.specTBday >= 10 ? m.specTBday.toFixed(0) : m.specTBday.toFixed(1), s: "TB/day, station (Stokes I)" },
+  ];
+  $("tiles").innerHTML = T.map(t => `<div class="tile"><span class="k">${t.k}</span><span class="v">${t.v}</span><span class="s">${t.s}</span></div>`).join("");
+}
+
+function table(m, o) {
+  const pf = 100 * o.frac;
+  const rows = [
+    ["Capture, scatter, 1.2 kHz spectra, quick-look", m.ge.capture, "m", "0.8 ms per 6.71 ms block; 0.19 with 5 streams contending"],
+    [`Fine channeliser, 2^${o.p} points${o.frac < 1 ? `, ${pf} % of band` : ""}`, m.ge.chan,
+      o.p <= 8 && st.impl === "fused" ? "m" : st.impl === "unfused" ? "m" : "d",
+      st.impl === "unfused" ? "cuFFT plus separate convert, |X|², accumulate (CuPy sweep)" :
+      o.p <= 8 ? "warp-shuffle kernel in lft3-spectrometer" : `cuFFT ${o.p <= 14 ? "single" : "two"}-pass, measured ${FFT_ONLY[o.p].toFixed(2)}, + ${CALLBACK_GE} for detect/accumulate callbacks`],
+    [`Drift search: ${o.nt} × ${m.tsamp} s, ±${o.dd} Hz/s, ${m.ntr} drift trials`, m.ge.search, "d",
+      `hyperseti, ${(kcell(o.nt) * 1e12).toFixed(0)} ps per cell, ${(m.nch / 1e9).toFixed(2)} G channels${o.kf > 1 ? `, ÷${o.kf} kernel speed-up` : ""}`],
+    ["Wideband search (detect, dedisperse coarse data)", m.ge.wide, "e", "heimdall-type; not benchmarked"],
+    ["RFI flagging on fine data", m.ge.rfi, "e", "spectral kurtosis"],
+  ];
+  $("tbl").innerHTML = `<thead><tr><th>Stage</th><th style="text-align:right">GE / stream</th><th>Basis</th><th>Notes</th></tr></thead><tbody>` +
+    rows.map(r => `<tr><td>${r[0]}</td><td class="n">${r[1].toFixed(3)}</td><td><span class="tag ${r[2]}">${{ m: "measured", d: "derived", e: "estimate" }[r[2]]}</span></td><td>${r[3]}</td></tr>`).join("") +
+    `<tr><td><b>Total per UHF stream</b> (VHF ${m.vhf.toFixed(2)})</td><td class="n"><b>${m.uhf.toFixed(3)}</b></td><td></td><td>${m.g.name}: ${m.gge.toFixed(2)} GE, ${m.g.bw} GB/s</td></tr>` +
+    `<tr><td>Host RAM per stream</td><td class="n">${fmtB(m.ramStream)}</td><td></td><td>search buffer ${fmtB(m.searchBufGB)} (${o.prec === 2 ? "fp16" : "fp32"}, 1.5 windows) + raw buffer ${fmtB(o.raw * RAW_GBS)}</td></tr>` +
+    `<tr><td>GPU memory per stream</td><td class="n">${fmtB(m.gmem)}</td><td></td><td>ring ${fmtB(Math.max(2, 2 * m.tfft) * RAW_GBS)} + accumulator and output ${fmtB(2 * m.nch * 4 / 1e9)} + 3 GB workspace</td></tr></tbody>`;
+}
+
+function render() {
+  const o = read(), m = model(o);
+  $("nf-v").textContent = `2^${o.p} · ${fmtHz(m.df)}`;
+  $("nf-s").textContent = `FFT spans ${fmtT(m.tfft)} · ${(m.nch / 1e9 >= 1 ? (m.nch / 1e9).toFixed(2) + " G" : (m.nch / 1e6).toFixed(0) + " M")} Stokes-I channels per stream`;
+  $("frac-v").textContent = `${Math.round(o.frac * 100)} %`;
+  $("tsamp-v").textContent = fmtT(m.tsamp);
+  $("tsamp-s").textContent = m.tsamp > o.tsamp ? `Raised to the FFT length (${fmtT(m.tfft)})` : `At least one FFT (${fmtT(m.tfft)})`;
+  $("nt-v").textContent = o.nt;
+  $("nt-s").textContent = `Window ${fmtT(m.window)} · drift resolution ${(m.df / m.window).toPrecision(2)} Hz/s`;
+  $("dd-v").textContent = `±${o.dd} Hz/s`;
+  $("dd-s").textContent = `${m.ntr} drift trials (hyperseti stepped plan)`;
+  $("gpu-s").textContent = `${m.g.bw} GB/s, ${m.g.mem} GB = ${m.gge.toFixed(2)} GB10-equivalents · ${m.g.price}`;
+  $("util-v").textContent = `${Math.round(o.util * 100)} %`;
+  $("bps-v").textContent = `${o.bps} → ${Math.ceil(6 / o.bps)} server${Math.ceil(6 / o.bps) > 1 ? "s" : ""}`;
+  $("raw-v").textContent = `${o.raw} s`;
+  $("wb-v").textContent = (o.wb).toFixed(2);
+  $("kf-v").textContent = o.kf === 1 ? "none" : `${o.kf}×`;
+  const w = [];
+  if (m.ntr === 1) w.push("The drift range is under one channel per window: the search only tests zero drift.");
+  if (m.spg < 1) w.push(`One stream does not fit on one ${m.g.name}; it would need ${m.perStream} GPUs per stream (split by band).`);
+  if (m.ramServer > 2048) w.push(`Host RAM per server is over 2 TB: fewer boards per server, a shorter raw buffer or fp16 search buffers.`);
+  $("warn").hidden = !w.length; $("warn").textContent = w.join(" ");
+  tiles(m, o); table(m, o); chart1(o); chart2(o);
+}
+
+// ---------- wiring
+$("gpu").innerHTML = GPUS.map(g => `<option value="${g.id}">${g.name} (${g.mem} GB)</option>`).join("");
+document.querySelectorAll("#controls input").forEach(i => i.addEventListener("input", render));
+$("gpu").addEventListener("change", render);
+const segs = [["impl-fused", "impl-unfused", "impl", "fused", "unfused"], ["prec-16", "prec-32", "prec", 2, 4]];
+for (const [a, b, key, va, vb] of segs) {
+  $(a).addEventListener("click", () => { st[key] = va; $(a).setAttribute("aria-pressed", "true"); $(b).setAttribute("aria-pressed", "false"); render(); });
+  $(b).addEventListener("click", () => { st[key] = vb; $(b).setAttribute("aria-pressed", "true"); $(a).setAttribute("aria-pressed", "false"); render(); });
+}
+const PRESETS = {
+  interim: { nf: 7, frac: 100, tsamp: 0, nt: 5, dd: 10 },
+  hz: { nf: 17, frac: 100, tsamp: 3, nt: 5, dd: 5 },
+  quarter: { nf: 17, frac: 25, tsamp: 3, nt: 5, dd: 5 },
+};
+document.querySelectorAll("[data-preset]").forEach(b => b.addEventListener("click", () => {
+  const p = PRESETS[b.dataset.preset]; for (const k in p) $(k).value = p[k]; render();
+}));
+legends();
+render();
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", render);
+new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(render, 150); });
+})();
+</script>

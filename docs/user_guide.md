@@ -222,13 +222,13 @@ Measured (`pipeline/bench/capacity/`; details in `docs/runtime.md` §6):
 
 | Streams (links) | Beams | Fits? | GPU used |
 |---|---|---|---|
-| 2 (one board, both links) | 4 | yes, with room for (throttled) searches | 46 % |
-| 4 (two boards) | 8 | compute yes, but needs 4 network links into the Spark (switch, unverified) | 87 % |
+| 2 (two boards) | 4 | yes, with room for (throttled) searches | 46 % |
+| 4 (four boards) | 8 | compute yes, but needs 4 network links into the Spark (switch, unverified) | 87 % |
 | 5 | 10 | passes the synthetic test, no headroom for the NICs | 96 % |
 | 6 | 12 | no | — |
 
-For 5 boards with 2 links each, plan **one Spark per board (5 Sparks)**. Three are enough only if each Spark can
-take 4 links and the searches run elsewhere.
+The station is 6 boards with **one link each** (6 streams). On Sparks that is **one Spark per 2 boards (3 Sparks)**,
+using both QSFP ports. Production servers (discrete GPUs) are sized in `docs/sizing.md`.
 
 Two cautions:
 * Other heavy jobs on the capture host can make the NIC drop packets through memory-bus contention, even when the

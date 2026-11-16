@@ -184,8 +184,13 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
   latency/sync-bound (twiddle table: no gain); next step = warp-shuffle radix-4 FFT.
 * **Capacity (pipeline/bench/capacity, synthetic + NIC-DMA memload): 4 streams pass with margin (GPU 87 %), 5 pass
   (96 %, readers ≤ 2.5 ms/block with the warp FFT), 6 fail (readers overrun; captures still real time).** Network:
-  2 direct 100G links per Spark. 5 boards × 2 streams → 5 Sparks (2 streams each, GPU 46 %); 3 only with 4
-  links/Spark via a switch (unverified) and searches elsewhere.
+  2 direct 100G links per Spark. **Station = 6 boards × 1 link (user, 2026-11-14; xlsx Final Specs)** → 3 Sparks
+  (2 boards each, GPU 46 %). Production sizing (discrete GPUs): docs/sizing.md.
+* **Sizing (docs/sizing.md, 2026-11-14):** all stages are memory-bandwidth bound, so cost is in GB10-equivalents
+  scaled by GPU bandwidth. hyperseti dedoppler (GB10, 2^20 ch of 1.164 Hz, 10 s spectra, ±4 Hz/s, stepped plan):
+  6.2 / 2.5 / 0.7 Mchan/s at 16 / 32 / 64 spectra; drift range matters little (±1/±10: 3.5/2.1). At full band
+  2^17 that is ~2.1 GB10 per stream, more than the Hz channeliser (~0.75). Recommendation: 1 RTX PRO 6000
+  Blackwell per board (57 %), 3 servers × 2 boards. GeForce excluded (no GPUDirect RDMA, licence).
 * **Warp FFT kernel** (64/128/256 points, one warp per FFT, `__shfl_xor`, no shared memory): 0.30 ms vs 0.50 ms per
   block, matches the DFT reference; `LFT3_FINESPEC_KERNEL=shared` forces the old kernel.
 * **Soak 2026-11-13 (2 h, 23 DDR + 23 raw dumps): no loss of the system's own making**, 0 reader overruns, DDR-dump
@@ -212,7 +217,7 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 * **The lab PPS is temporary, not fixed properly** (`timing.pps: temporary`). The clock measures −24.6 ppm
   against it (`raw_cycles_per_pps` ≈ 156 246 160); unconfirmed until the PPS is fixed. If real: ~49 kHz error at 2 GHz.
 * `expected_clk_period` is a plain software register (design default 208 333 332 is wrong); `start` writes 156250000.
-  `clk_cycles_per_pps` is garbage, use `raw_cycles_per_pps`. Both in firmware_requests.md #11.
+  `clk_cycles_per_pps` is garbage, use `raw_cycles_per_pps`. Both in firmware_requests.md #10.
 * All `lft3-board` write commands verified live 2026-11-12 (start 9.6 s; trigger dumps 4 GiB at ~10 Gb/s for ~3.5 s).
 * **The user allows reprogramming the board and testing write functions** (2026-11-12). Still say what you're doing.
 * Board sensors (rails, temps) are only in the board's sysfs; katcp has no sensors. SSH as casper needs a key.

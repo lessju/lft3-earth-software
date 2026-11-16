@@ -12,7 +12,7 @@ control") and 8 ("System management, monitoring and control") of `docs/full_arch
 | Backend monitored and controlled through casperfpga | `lft3.board` wraps casperfpga; all register access goes through it |
 | Operate many boards together (6 in the full system) | `lft3/board/station.py`: every operation on all boards in parallel, per-board results, barrier-released sync |
 | Diagnostic data from the boards (spectra, ADC samples, triggered dumps) | `lft3/board/capture.py` + `lft3-board snapshot/capture` (§3.1) |
-| A register map describing what each register does | `lft3/board/registers.py` (first version; firmware request #10 asks for the authoritative one) |
+| A register map describing what each register does | `lft3/board/registers.py` (first version; firmware request #9 asks for the authoritative one) |
 | Physical metrics: temperatures, voltages, currents, power | `lft3/board/sensors.py` reads the board's sysfs over SSH. **Needs an SSH key** on the board |
 | Firmware metrics: error counts, packet metrics | `lft3/board/telemetry.py`: snapshots, counter rates, health checks |
 | Diagnostic spectra, antenna/beam RMS | Firmware FFT/ADC snapshots (`lft3-board snapshot`); coarse quick-look spectra from the GPU runtime (docs/user_guide.md §5, §7) |

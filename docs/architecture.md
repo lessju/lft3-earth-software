@@ -26,8 +26,7 @@ RFSoC 4x2 ──100GbE──► ConnectX-7 (one PCIe Gen5 x4 half, ~95 Gb/s usab
 
 **Receiver: NVIDIA DAQIRI** (Apache-2.0, part of the Holoscan family).
 * Lists DGX Spark as supported hardware.
-* Has raw-ibverbs and DPDK engines, hardware flow steering, CPU/GPU memory regions, C++ and Python APIs,
-  and NIC hardware packet reorder keyed on a header sequence field.
+* Has raw-ibverbs and DPDK engines, hardware flow steering, CPU/GPU memory regions, C++ and Python APIs.
 * Its DGX Spark report shows 199 Gb/s loss-free on two links with 8000-B payloads, with one CPU core polling both queues.
 * The same report shows a plain UDP socket tops out at ≈25 Gb/s per core at 8 KB, so sockets are not an option at 60–70 Gb/s.
 * GPUDirect RDMA is not supported on Spark. Use `host_pinned` regions, which the iGPU reads in place.

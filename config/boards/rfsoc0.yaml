@@ -50,7 +50,8 @@ receiver:                           # the host side of this board's streams (DGX
       processing_core: 7
       beam_offset: 0                # this link carries beams 0, 1
       reader_cpus: '8,9,0-4'
-    # The second link (same packet format, beams 2, 3) once it is cabled. Interface = the PCI function of the
+    # The firmware has ONE 100 GbE link per board (xlsx Final Specs). A second entry is only for a future
+    # firmware with two outputs. Interface = the PCI function of the
     # Spark's other QSFP port (enp1s0f1np1 = 0000:01:00.1); check udp_port / source_ip against the firmware.
     # - name: link1
     #   interface: '0000:01:00.1'

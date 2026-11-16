@@ -1,7 +1,7 @@
 """Register map of the spectrometer_8way_4x firmware, as used by the host.
 
 Names come from the .fpg register list; semantics from lft3-earth-main/README.md, listener.py and our own
-measurements. This is the start of the "register map" asked for in docs/firmware_requests.md #10.
+measurements. This is the start of the "register map" asked for in docs/firmware_requests.md #9.
 
 Each Register says how the host should treat it:
   kind     "counter" (monotonic, 32-bit wrap; rates are meaningful), "gauge" (instantaneous value),
