@@ -62,6 +62,7 @@ lft3-pipeline run --source synthetic --no-record    # generated noise + tone (no
 lft3-pipeline run --source synthetic --random-noise --tone-drift 50 --lossless   # drifting tone for the live search
 lft3-pipeline run --observation NAME                # another config/observations/NAME.yaml
 lft3-pipeline run --no-search                       # without the live drift search
+lft3-pipeline run --search-triggers                 # live hits trigger raw-voltage dumps (off by default)
 lft3-pipeline run --dry-run                         # show the docker commands only
 lft3-pipeline status                                # every ring on this host: rate, loss, readers
 lft3-pipeline trigger --label test                  # raw-voltage dump of every link (GUPPI RAW)

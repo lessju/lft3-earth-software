@@ -574,6 +574,14 @@ def chart_resolution(out):
     f, axes = plt.subplots(1, 3, figsize=(10.5, 3.3))
     cols = {1.0: "#2e8b3a", 0.5: "#1f8a83", 0.25: "#2f6db0", 0.1: "#6b3fa0"}
     norec = [r for r in d.get("matrix_no_record", []) if "speed_x_real_time" in r]
+    old = [r for r in d.get("matrix_single_thread", []) if "speed_x_real_time" in r]
+    for t in tints:   # the single-thread FBH5 writer, before parallel compression
+        pts = sorted((r["nf"], r["speed_x_real_time"]) for r in old if r["integration_s"] == t)
+        if pts:
+            axes[0].plot([p[0] for p in pts], [p[1] for p in pts], "--", color=cols.get(t, "#333"), lw=0.8,
+                         alpha=0.6)
+    if old:
+        axes[0].text(1000, 0.025, "dashed: single-thread writer", fontsize=6.5, color="#555", ha="right")
     for data, ax, title in ((rows, axes[0], "(a) whole chain, writing FBH5"),
                             (norec, axes[1], "(b) whole chain, not writing")):
         key = "speed_x_real_time"

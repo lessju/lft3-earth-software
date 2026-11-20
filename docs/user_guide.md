@@ -83,19 +83,30 @@ search:
   max_drift_hz_s: 200.0
   snr_threshold: 20.0
   dedoppler_plan: optimal
+  drop_zero_drift: true             # stationary hits = local RFI
   flatten_coarse_ripple: true
   max_missing_fraction: 0.01        # skip windows with more packet loss than this
   ring_spectra: 64                  # GPU spectra kept for the search (6.3 MB each)
   hyperseti: {}                     # raw hyperseti overrides
+triggering:                         # live hits -> raw-voltage dumps; off until the rules are agreed
+  enabled: false
+  min_snr: 50.0
+  single_beam: true                 # not on hits both beams see
+  skip_rfi_labels: true
+  min_interval_s: 10.0
+  pre_s: 0.5
+  post_s: 0.5
 dump: {enabled: true, max_window_s: 1.0}
 ring: {seconds: 2.0}
 ```
 
 Choosing resolution and integration (one stream on the Spark, measured; docs/runtime.md §6):
 
-* Everything keeps real time up to 1024 fine channels (149 Hz) at 1 s, or 128 (1.19 kHz) at 0.1 s, **while
-  recording**: the FBH5 writer manages ~50 MB/s, so keep fine channels per board channel / integration time
-  below ~1500 per second. Without recording (`record_fine: false`) everything up to 1024 at 0.1 s keeps up.
+* Everything keeps real time **while recording** up to 1024 fine channels (149 Hz) at 0.25 s, or 256 at 0.1 s:
+  the FBH5 writer manages ~160 MB/s (4 threads), so keep fine channels per board channel / integration time below
+  ~4000 per second. Without recording (`record_fine: false`) everything up to 1024 at 0.1 s keeps up.
+* With short integrations keep the search window ~64 s long (`window_spectra` = 64 s / integration): the drift
+  step is channel width / window length, and a signal drifting less than one step is dropped as stationary.
 * Search sensitivity grows as √(fine channels × window duration); the drift step is channel width / window length.
 * More than 1024 fine channels needs the Hz-resolution path (not built yet) and, for the search, longer
   integrations and `dedoppler_plan: stepped`.
@@ -237,6 +248,12 @@ memory traffic, and searches the last 64 spectra every 32 s:
 * `lft3-pipeline status` shows it as `search(lag, over, windows)` on the `<stream>-spectra` ring; its log is
   `<run_dir>/<stream>-search.log`. `--no-search` turns it off for one run.
 * Windows with more than 1 % missing packets are skipped. A gap in the spectra restarts the window.
+* Hits with zero drift (stationary, i.e. local interference) are dropped; the window record counts them.
+* **Triggers** (off by default; `--search-triggers` for one run, or `triggering.enabled` in the observation): the
+  strongest new hit with S/N ≥ 50 that is not labelled RFI and not seen by both beams triggers a raw-voltage dump
+  of its board (`lft3-dump`), at most every 10 s. The dump covers the moment the hit is found, not the
+  window itself (the voltage ring holds ~2 s), so it records signals that are still there. Triggers are in
+  `<data_dir>/triggers.log` with the hit in the label, and in the window record.
 * Drift resolution = channel width / window length (18.6 Hz/s for 1.19 kHz and 64 s), and reported drifts are
   good to about one step. S/N ≥ 20 by default.
 

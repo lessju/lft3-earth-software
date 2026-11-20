@@ -86,6 +86,14 @@ At 1.16 Hz and 1 s spectra that is ~30 GB10 per stream, so the figures above (10
 `stepped` plan) remain the planning basis; the `optimal` plan the 1.2 kHz configuration uses would cost ~6× more
 trials there. Details and the whole-chain matrix: docs/runtime.md §6.
 
+Raw buffer for search triggers: a live-search trigger can only dump what is still in the raw buffer. To record the
+window a hit came from, the buffer must cover window + search latency: ~70 s at 1.2 kHz with 64 s windows,
+i.e. ~500 GB per stream of host RAM (7.5 GB/s); with the 2 s ring a trigger records the signal as it is when found.
+
+Recording: the FBH5 writer compresses ~160 MB/s per stream with 4 threads on the GB10 (50 MB/s single-threaded),
+enough for the fine product up to ~4000 fine channels per board channel per second of integration. Production
+servers with more cores per stream scale this linearly; it is CPU, not GPU, load (§5).
+
 ## 4. Station totals and GPU count
 
 Totals: 5 UHF streams plus the VHF stream at half processing (its padded inputs are skipped). Plan for **≤ 70 %**

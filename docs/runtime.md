@@ -165,6 +165,27 @@ In the order they were made. Each one is backed by a measurement on this machine
       greedy rule, **identical merged hits** in 25 gulps of soak data (8055 raw hits), 0.047 s instead of
       8.6 s; a real window now takes ~0.7 s per beam (~4 % of the step).
 
+19. **Zero-drift hits are dropped** (2026-11-20, `search.drop_zero_drift`). On live data ~99.9 % of the
+    unlabelled hits had drift exactly 0: stationary, i.e. local RFI. They are dropped after the hit merge (so a
+    stationary signal's weaker off-zero trials, folded into its zero-drift peak, go with it), in the live and the
+    file search alike; each window record counts them. A synthetic stationary tone: found and dropped in 8/8
+    windows. Live (6 min, 9 windows): ~3950 dropped and ~160 kept per window, of which 97 % labelled Wi-Fi and ~4
+    unlabelled; the strongest unlabelled ones sit at ±18.6 Hz/s, one step off zero, i.e. still stationary. Cost: a real drift below one trial step (18.6 Hz/s at 1.19 kHz × 64 s) can be reported as 0 and is
+    dropped too.
+20. **Search → trigger, built and off** (`triggering:`, `lft3-pipeline run --search-triggers`). After each window
+    the strongest hit with S/N ≥ 50, not labelled RFI and not also in the other beam (within 2 channels) sends
+    `trigger now 0.5 0.5 <label>` to the stream's `lft3-dump`, at most every 10 s, logged to `triggers.log`.
+    The dump covers the moment of the decision: the voltage ring holds ~2 s, the window ends up to 64 s before
+    its search, so a trigger catches signals that persist, not the window's own voltages (a longer raw buffer is a
+    sizing question, docs/sizing.md). Tested: 4/4 searched windows with a +50 Hz/s tone (S/N 143) triggered complete
+    1 s GUPPI RAW dumps 32 s apart; a stationary tone triggered nothing. Off until the hit rules are agreed.
+21. **FBH5 chunks compressed in parallel** (`--compress-threads`, default 4). The resolution benchmark found the
+    single-thread writer (HDF5's shuffle + deflate inside `H5Dwrite`) capped recording at ~50 MB/s compressed.
+    The writer now shuffles and deflates the 64 Ki-channel chunks of a spectrum on several threads (zlib level 1,
+    HDF5's own byte shuffle) and writes them with `H5Dwrite_chunk` into the same filtered dataset: identical
+    compressed bytes to HDF5's path (unit test), decoded by every reader unchanged; the all-zero mask chunk is
+    compressed once. Spectra whose width is not a whole number of chunks use the old path.
+
 ## 3. Code map
 
 | Path | What |
@@ -272,6 +293,8 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
   * Also present: `/lft3_timestamp` and `/lft3_missing_packets`; the SIGPROC attributes (`fch1`, `foff`,
     `tsamp`, `tstart`, `nfpc`, …); `lft3_*` root attributes (NCO, pfb_lsb, layout, time reference).
   * New attributes: `lft3_stream`, `lft3_obs_id`, `lft3_config_hash`, `lft3_mode`, `lft3_beam_offset`.
+* **Compression in parallel**: each spectrum's chunks are shuffled + deflated on `--compress-threads` threads and
+  written with `H5Dwrite_chunk` (decision 21).
 * **Storage and volume**: chunks are one spectrum × 65 536 channels, so a frequency range decodes only its chunks.
   `/data` shuffle + deflate 1 makes real spectra 1.43× smaller; the all-zero `/mask` shrinks ~1000× with
   deflate 4. That needs the h5dsc99 patch `shuffle_deflate.diff`. Fine spectra are 3.1 MB/s per beam before
@@ -321,8 +344,11 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
   per gulp of 2^17 channels, divide by the median coarse-channel response, then hyperseti (normalise, blank
   gulp edges, dedoppler, hit search). A discontinuity, a jump in integration number, an overrun or a capture
   restart empties the buffer; a window missing more than `max_missing_fraction` of its packets is skipped.
+* Hits with drift 0 are dropped after merging (`drop_zero_drift`, decision 19).
+* Triggering (decision 20, off by default): `trigger_candidate` picks the strongest hit passing the rules; the
+  dump command goes over `/dev/shm/lft3-<stream>-dump.sock` (`lft3.ring.send_dump_command`).
 * Output per run: `live_<stream>_<UTC>.csv` (`lft3.search.core.HIT_COLUMNS`) and `.windows.jsonl` (per window:
-  searched or why not, hits, search time, latency, lag). `--search-save-every K` saves every K-th window as .npy
+  searched or why not, hits, zero-drift hits dropped, trigger sent, search time, latency, lag). `--search-save-every K` saves every K-th window as .npy
   in `<run_dir>/windows/` for bit-exact checks against FBH5.
 
 ## 5. Adding a reader
@@ -415,45 +441,51 @@ NIC itself drop packets before any of our code sees them. Leave headroom on the 
 
 ### Resolution and integration benchmark (2026-11-20, `pipeline/bench/resolution/resolution.py`)
 
-One synthetic stream (random GPU noise + a 50 Hz/s tone), live search on (64 spectra every 32, ±200 Hz/s),
-`--fast --lossless`: the chain runs as fast as its slowest stage, so the speed is the stream's capacity in units of
-real time (≥ 1 keeps up). Raw results: `docs/system_overview/data/resolution_bench.json`.
+One synthetic stream (random GPU noise + a 50 Hz/s tone), live search on (64 spectra every 32, ±200 Hz/s,
+zero-drift drop), `--fast --lossless`: the chain runs as fast as its slowest stage, so the speed is the stream's
+capacity in units of real time (≥ 1 keeps up). Raw results: `docs/system_overview/data/resolution_bench.json`.
 
-| Fine channels (width) | Integration | Whole chain, writing FBH5 | Not writing | Search alone, idle GPU | Tone S/N |
-|---|---|---|---|---|---|
-| 128 (1192 Hz) | 1 / 0.5 / 0.25 / 0.1 s | 5.3 / 5.1 / 3.1 / 1.1× | 5.3 / 5.1 / 4.8 / 3.2× | 106 / 61 / 31 / 13× | 144 / 92 / 77 / 53 |
-| 256 (596 Hz) | same | 4.8 / 3.1 / 1.5 / 0.56× | 4.8 / 4.6 / 4.2 / 3.0× | | 198 / 144 / 100 / 68 |
-| 512 (298 Hz) | same | 3.1 / 1.5 / 0.70 / 0.28× | 3.4 / 3.3 / 3.0 / 1.8× | | 280 / 197 / 142 / 89 |
-| 1024 (149 Hz) | same | 1.5 / 0.73 / 0.33 / 0.14× | 2.4 / 2.3 / 2.1 / 1.07× | 7.3 / 5.3 / 3.1 / 1.5× | 363 / 275 / 187 / 126 |
+| Fine channels (width) | Integration | Writing FBH5 (4 threads) | Writing, single thread (before) | Not writing | Search alone, idle GPU | Tone S/N |
+|---|---|---|---|---|---|---|
+| 128 (1192 Hz) | 1 / 0.5 / 0.25 / 0.1 s | 5.3 / 5.1 / 4.9 / 2.9× | 5.3 / 5.1 / 3.1 / 1.1× | 5.3 / 5.1 / 4.9 / 3.3× | 108 / 60 / 31 / 13× | 144 / 113 / 65 / (31) |
+| 256 (596 Hz) | same | 4.8 / 4.6 / 4.1 / 1.6× | 4.8 / 3.1 / 1.5 / 0.56× | 4.8 / 4.6 / 4.2 / 3.0× | | 198 / 144 / 100 / (55) |
+| 512 (298 Hz) | same | 3.5 / 3.4 / 2.1 / **0.89×** | 3.1 / 1.5 / 0.70 / 0.28× | 3.5 / 3.4 / 3.0 / 1.8× | | 280 / 201 / 142 / 93 |
+| 1024 (149 Hz) | same | 2.5 / 2.2 / 1.05 / **0.45×** | 1.5 / 0.73 / 0.33 / 0.14× | 2.3 / 2.3 / 2.1 / 1.08× | 7.4 / 5.3 / 3.1 / 1.5× | 363 / 276 / 187 / 126 |
 
-* **Writing FBH5 is the bottleneck.** Speed × output rate is ~50 MB/s (compressed) in every recording run: the
-  single writer thread doing shuffle + deflate per 64 Ki-channel chunk. Recording keeps real time while the raw
-  fine product stays below ~70 MB/s, i.e. fine channels per board channel / integration time ≲ 1500 s⁻¹
-  (128 at 0.1 s just passes, 1024 at 0.5 s does not). Without writing, every tested combination keeps up.
-  Fix before using shorter integrations or finer channels: compress chunks in parallel (they are independent;
-  write them with `H5Dwrite_chunk`), or write the fine product at a slower cadence than the search sees.
+* **Recording.** The single-thread writer (HDF5's shuffle + deflate inside `H5Dwrite`) managed ~50 MB/s
+  compressed; with 4 compression threads (decision 21) ~160 MB/s (speed × output rate in every writer-limited
+  run). Recording keeps real time while fine channels per board channel / integration time ≲ 4000 s⁻¹ (raw fine
+  product ≲ 200 MB/s): everything except 512 at 0.1 s and 1024 at 0.1 s. Without writing, every tested
+  combination keeps up. More threads would help further (the reader cpuset has 7 cores, shared with the dump and
+  the search).
 * **The search** costs, per 2^17-channel gulp of 64 spectra, a floor of ~21 ms (normalisation, peak finding,
   Python) plus ~0.15 ms per drift trial (trials = 2 × max drift × window length / channel width + 1). Shorter
-  integrations mean fewer trials per window but more windows per second, so the cost per second still rises; finer
-  channels raise both channels and trials. In the matrix the search shares the GPU with a spectrometer running at
-  2–5× real time, so its own headroom there is lower than the idle-GPU column.
+  integrations mean fewer trials per window but more windows per second, so the cost per second still rises;
+  finer channels raise both channels and trials. In the matrix the search shares the GPU with a spectrometer
+  running at 2–5× real time, so its own headroom there is lower than the idle-GPU column.
 * **Toward Hz resolution** (search alone, ±4 Hz/s as in docs/sizing.md, 1 s spectra, 64-spectrum windows):
-  18.6 Hz 1.7×, 2.33 Hz 0.11×, 1.16 Hz 0.03× real time, i.e. ~30 GB10 per stream at 1 s spectra. The floor alone
+  18.6 Hz 1.7×, 2.33 Hz 0.10×, 1.16 Hz 0.03× real time, i.e. ~30 GB10 per stream at 1 s spectra. The floor alone
   exceeds real time from ~2^13 fine channels with 1 s spectra, so Hz resolution needs longer integrations (the
   sizing assumes 10 s) and the `stepped` plan (the `optimal` plan's trial count grows with window length × drift
   range: ~2200 trials for 32 × 10 s at ±4 Hz/s, against 383 stepped).
 * **Sensitivity** follows the radiometer equation: tone S/N ∝ √(fine channels per board channel × window
   duration).
+* **Window length in seconds matters.** The drift step is channel width / (window_spectra × integration time):
+  at 1.19 kHz and 0.1 s a 64-spectrum window is 6.4 s and the step 186 Hz/s, so the 50 Hz/s tone is reported as
+  0 and dropped as stationary (values in brackets: the tone was found in only 1–2 of 6–9 windows). For short
+  integrations raise `window_spectra` so the window stays ~64 s (cost per second then rises with the trials).
 * **Drift estimate**: within one trial step when the signal crosses several channels per window; when it crosses
-  only about one channel (drift ≈ 1–1.4 steps) a window sometimes reports one step lower (often 0).
+  only about one channel a window sometimes reports one step lower.
 
 ## 7. Open items and next steps
 
 * **Hz resolution** (Nf = 2^16–2^17): a fused path (cuFFT with load/store callbacks, or a custom kernel), gathering
   64–128 blocks per channel row (232 GB/s measured gather); ring ≥ 2 × FFT length (12.9 GB at 2^17). Unmodified
   rawspec is too slow on GB10 (decision 14). Decide the band and output volume first (`docs/architecture.md`).
-* **FBH5 writer throughput** (~50 MB/s compressed, one thread) limits recording at short integrations or finer
-  channels (§6, resolution benchmark): parallel chunk compression.
+* **FBH5 writer**: ~160 MB/s with 4 threads (decision 21); finer channels at 0.1 s need more threads or cores.
+* **Trigger rules**: on live data the strongest hits left after the zero-drift drop are stationary signals one
+  step off zero (±18.6 Hz/s, e.g. Wi-Fi); require |drift| > one step (`triggering.min_abs_drift_hz_s`) before
+  enabling triggers.
 * **Searches**: live search on the spectra ring done (decisions 16–18). Next: a zero-drift / stationary-RFI
   filter (99.9 % of the unlabelled live hits have drift 0; SETI searches usually exclude |drift| below one
   step), hits → triggers (GPU narrowband

@@ -238,10 +238,15 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
   overruns. Real data: ~3700 hits/window, almost all zero-drift local RFI (Wi-Fi, spurs, other). hyperseti's
   `merge_hits` took 13.9 s/window → `core.merge_hits` (identical results on soak data, 180× faster, ~0.7 s per
   beam per window now).
-* **Resolution benchmark (2026-11-20, pipeline/bench/resolution):** one stream keeps real time while recording
-  up to Nf 1024 @ 1 s or Nf 128 @ 0.1 s; the limit is the single-thread FBH5 writer (~50 MB/s compressed). Without
-  recording everything up to Nf 1024 @ 0.1 s keeps up. Search per 2^17-ch gulp of 64 spectra: ~21 ms + 0.15 ms per
+* **Resolution benchmark (2026-11-20, pipeline/bench/resolution):** with 4-thread FBH5 compression (~160 MB/s;
+  single thread was ~50) one stream keeps real time while recording up to Nf 1024 @ 0.25 s or Nf 256 @ 0.1 s;
+  without recording everything up to Nf 1024 @ 0.1 s. Short integrations need longer windows (in spectra): the
+  drift step = foff / window seconds, and sub-step drifts are dropped as zero drift. Search per 2^17-ch gulp of 64 spectra: ~21 ms + 0.15 ms per
   drift trial; at 1.16 Hz with 1 s spectra ~30 GB10/stream → Hz needs 10 s spectra + stepped plan (sizing basis).
+* **Zero-drift drop** (`search.drop_zero_drift`, on), **search → lft3-dump triggers** (`triggering:`, OFF by
+  default; `--search-triggers`; S/N ≥ 50, not RFI-labelled, single beam, ≤ 1 per 10 s; dumps "now" since the
+  ring is ~2 s), **parallel FBH5 chunk compression** (`--compress-threads 4`, H5Dwrite_chunk, same bytes as
+  HDF5's filters). All tested 2026-11-20 (docs/runtime.md decisions 19-21).
 * The old periodic synthetic generator repeats every block → integrated spectra never fluctuate: useless for
   searches (fixed pattern adds coherently). Use `--random-noise` for anything search-related.
 

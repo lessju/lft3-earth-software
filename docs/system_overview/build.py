@@ -361,7 +361,8 @@ def content():
                                    "integrated over 0.99992 s; Hz resolution planned"],
            ["Time base", "t counts spectra (6.5536 µs each) since the last board sync; blocks of 1024 spectra "
                          "(6.71 ms)"],
-           ["Products", "fine and coarse FBH5 spectra, GUPPI RAW voltage dumps on trigger, hyperseti hits"],
+           ["Products", "fine and coarse FBH5 spectra, GUPPI RAW voltage dumps on trigger (manual or, when enabled, "
+                        "from the search), hyperseti hits"],
            ["Live search", "hyperseti on the last 64 spectra every 32 s, from GPU memory; drift ±200 Hz/s in "
                            "18.6 Hz/s steps; S/N ≥ 20"],
            ["Capacity of one Spark", "2 boards with headroom; compute for up to 5; at Hz resolution about 1"],
@@ -827,9 +828,10 @@ def content():
       "Per beam and per 2<super>17</super> channels it divides out the coarse-channel response, then hyperseti "
       "normalises, sums along every drift trial within ±200 Hz/s, and keeps peaks above S/N 20. Hits near the "
       "board's 125 MHz spurs or in the Spark's Wi-Fi channel are labelled as RFI but kept.",
+      "Hits whose drift is exactly zero are dropped after merging: a stationary signal is local interference.",
       "A gap in the data restarts the window; a window missing more than 1 % of its packets is skipped and the "
-      "reason recorded. Hits go to a CSV file, and a second file records every window: searched or not, hits, time "
-      "taken and latency.",
+      "reason recorded. Hits go to a CSV file, and a second file records every window: searched or not, hits, "
+      "zero-drift hits dropped, triggers, time taken and latency.",
       mono("lft3-pipeline") + " starts and stops the search with the run and shows its lag and window count. If "
       "the search fails, the run continues without it.")
     P("Why live from GPU memory: the earlier search on finished files read, decompressed and copied gigabyte files "
@@ -861,14 +863,30 @@ def content():
            ["Tone at −120 Hz/s, amplitude 0.5", "−111.8 or −130.4 Hz/s, S/N 33–38 against the expected 36"],
            ["Beam without a tone", "no hits: 5 windows × 786 432 channels × 21 trials at S/N 20"],
            ["2 % of packets dropped", "missing fraction measured 2.00 %; every window skipped and logged"],
+           ["Stationary tone", "found and dropped as zero drift in 8 of 8 windows; no trigger"],
+           ["Triggers on, +50 Hz/s tone", "4 of 4 searched windows triggered a complete 1 s raw-voltage dump, 32 s "
+                                          "apart"],
            ["1 hour live on the board", "no packet loss, NIC drop counter unchanged, 110 of 110 windows searched, no "
                                         "overruns"]],
           [0.32, 0.68], "Validation of the live search, 20 November 2026. Synthetic runs use non-repeating noise "
                         "generated on the GPU with a drifting tone injected into one input.")
-    P("On live data a window gives about 3700 hits. Almost all are stationary: Wi-Fi, the board spurs and other local "
-      "interference, with zero drift. A filter for zero-drift hits, clustering across windows and beams, and turning "
-      "hits into raw-voltage triggers are the next steps. The searches' cost against resolution and integration time "
-      "is measured in §10.")
+    H2("From hits to triggers")
+    P("On live data a window gave about 4100 hits before the zero-drift drop; 99.9 % of the unlabelled ones were "
+      "stationary: Wi-Fi, the board spurs and other local interference. After the drop about 160 remain per "
+      "window, 97 % of them labelled Wi-Fi and about four unlabelled. The strongest unlabelled ones drift by "
+      "exactly one step, ±18.6 Hz/s: still stationary signals, measured one step off zero, so the trigger rules "
+      "should also require a drift larger than one step. The remaining hits can drive the raw-voltage dump:")
+    B("after each window, the strongest hit with S/N of at least 50, not labelled as known RFI, and not also seen "
+      "by the board's other beam within two channels, triggers a raw-voltage dump of that board;",
+      "at most one trigger per 10 s per board; each is logged with the hit's window, beam, frequency, drift and "
+      "S/N;",
+      "the dump records the moment the hit is found. The voltage ring holds about 2 s, while a window ends up to a "
+      "minute before its search finishes, so the trigger catches a signal that is still there, not the window "
+      "itself. Recording the window's own voltages needs a much longer raw buffer, a sizing question (§11).")
+    P("Tested with a drifting synthetic tone: every searched window triggered a complete one-second dump, 32 s "
+      "apart; a stationary tone was found, dropped and triggered nothing. Triggering is built but switched off "
+      "until the rules for what deserves a dump are agreed. The searches' cost against resolution and integration "
+      "time is measured in §10.")
 
     # ------------------------------------------------------------------------------------------------ 9
     H1("Operating the system")
@@ -880,6 +898,7 @@ def content():
          "lft3-pipeline trigger --label test       # raw-voltage dump of every board\n"
          "lft3-pipeline stop                       # readers first (files closed), then capture\n"
          "lft3-pipeline run --observation NAME     # another observation configuration\n"
+         "lft3-pipeline run --search-triggers      # live hits trigger raw-voltage dumps (off by default)\n"
          "lft3-search FILE.h5                      # hyperseti on a finished file (same windows as live)\n"
          "lft3-view                                # browser viewer on port 8687")
     P("A healthy run prints, every 10 s per board: 60.8 Gb/s, no increase in partial or skipped blocks or missing "
@@ -938,13 +957,15 @@ def content():
       "allows, for four channel widths and four integration times. The speed is then the stream's capacity in units "
       "of real time: 1 or more keeps up.")
     FIGURE("c8_resolution", "Capacity of one stream against fine channel width and integration time. (a) The whole "
-                            "chain writing its spectra to disk; (b) the same without writing; (c) the live search "
-                            "alone on an idle GPU, extended to Hz resolution with a ±4 Hz/s drift range. 64-spectrum "
-                            "windows throughout.", width=16 * cm)
-    B("<b>Writing the spectra is the limit.</b> The FBH5 writer compresses on one thread at about 50 MB/s. Recording "
-      "keeps up while fine channels per board channel divided by the integration time stays below about 1500 per "
-      "second: 1024 channels (149 Hz) at 1 s, or 128 channels (1.2 kHz) at 0.1 s. Without writing, every tested "
-      "combination keeps up, down to 149 Hz at 0.1 s. Compressing chunks in parallel removes this limit.",
+                            "chain writing its spectra to disk, with four compression threads; dashed, the earlier "
+                            "single-thread writer; (b) the same without writing; (c) the live search alone on an "
+                            "idle GPU, extended to Hz resolution with a ±4 Hz/s drift range. 64-spectrum windows "
+                            "throughout.", width=16 * cm)
+    B("<b>Writing the spectra was the limit.</b> The first benchmark found the FBH5 writer compressing on one thread "
+      "at about 50 MB/s. It now compresses the chunks of each spectrum on four threads, about 160 MB/s, and "
+      "recording keeps up while fine channels per board channel divided by the integration time stays below about "
+      "4000 per second: 149 Hz down to 0.25 s, or 596 Hz at 0.1 s. Without writing, every tested combination keeps "
+      "up, down to 149 Hz at 0.1 s.",
       "<b>The search</b> costs a fixed part per window, about 21 ms per 2<super>17</super> channels for normalising "
       "and peak finding, plus a part per drift trial. Finer channels add both channels and trials; shorter "
       "integrations mean fewer trials but more windows per second. Either way the cost rises.",
@@ -952,8 +973,10 @@ def content():
       "0.1× at 2.3 Hz and 0.03× at 1.16 Hz, about 30 GB10s per board. Hz resolution therefore needs integrations of "
       "about 10 s and hyperseti's 'stepped' trial plan, which is what the sizing in §11 assumes.",
       "<b>Sensitivity</b> follows the radiometer equation: the injected tone's S/N grows with the square root of "
-      "the number of fine channels and of the window duration, from 53 at 1.2 kHz and 0.1 s to 363 at 149 Hz and "
-      "1 s.")
+      "the number of fine channels and of the window duration, up to 363 at 149 Hz and 1 s.",
+      "<b>Keep the window long in seconds.</b> The drift step is the channel width divided by the window length. "
+      "Sixty-four spectra of 0.1 s make a 6.4 s window and a 186 Hz/s step at 1.2 kHz, so the 50 Hz/s test tone "
+      "looked stationary and was dropped. Short integrations need more spectra per window.")
 
     H2("Comparison with rawspec")
     FIGURE("c3_rawspec", "rawspec, Breakthrough Listen's standard fine channeliser, against our spectrometer, per "
@@ -1042,7 +1065,11 @@ def content():
       "<b>The cheapest lever is the band.</b> Hz resolution on a quarter of the band costs 1.2 GB10-equivalents per "
       "board, less than the full band at 4.7 Hz, and the station then needs 2 GPUs.",
       "<b>A faster search kernel pays most.</b> Four times faster takes the 1.16 Hz station from 6 GPUs to 3; twice "
-      "as fast is not enough to fit two boards on one GPU.")
+      "as fast is not enough to fit two boards on one GPU.",
+      "<b>The live search confirms the assumptions.</b> Measured on the Spark (§10), the search costs a fixed part "
+      "per window plus a part per drift trial. With 1-second spectra and 64-spectrum windows, 1.16 Hz would need "
+      "about 30 GB10-equivalents per board, so Hz resolution needs the 10-second spectra and the 'stepped' trial "
+      "plan assumed here.")
 
     H2("Memory, network and storage")
     B("<b>GPU memory</b> at 1.16 Hz is about 31 GB per board: the ring, the Stokes-I accumulator and output buffer, "
@@ -1051,6 +1078,12 @@ def content():
       "precision. A raw-beam buffer for transients costs 7.5 GB per second of buffer per board. A dispersed pulse at "
       "a dispersion measure of 1000 sweeps 0.3–1.24 GHz in 43 s, so a long buffer means a terabyte of RAM per "
       "server. It cannot go on NVMe: writing 7.5 GB/s continuously wears out flash in weeks.",
+      "<b>Raw buffer for search triggers.</b> A search trigger can only record what is still in the raw buffer. "
+      "To capture the window a hit came from, the buffer must cover the window plus the search time, about 70 s "
+      "at 1.2 kHz and 64-second windows: about 500 GB per board. With today's 2 s ring a trigger records the signal "
+      "as it is when found.",
+      "<b>Recording</b> the fine spectra is CPU work: compression at about 160 MB/s on four GB10 cores per board, "
+      "more than the full-band 1.2 kHz product needs. Hz-resolution spectra are not kept in full (below).",
       "<b>PCIe</b> carries 7.6 GB/s per board from network card to GPU, about 15 % of a Gen5 x16 slot.",
       "<b>Storage</b> is driven by the trigger rate, not by the spectra. The 1.2 kHz spectra are about 2.3 TB per day "
       "for the station. Full-band Hz spectra would be 56 TB per day per board and cannot be kept; only hits and short "
@@ -1128,6 +1161,11 @@ def content():
                                                                                 "ghosts, drift to one 18.6 Hz/s step"],
            ["Observation configuration file", "one place for resolution, integration, products and search, used by "
                                               "runs and searches"],
+           ["Drop zero-drift hits", "99.9 % of unlabelled live hits were stationary local interference"],
+           ["Search triggers dumps, off by default", "tested end to end; rules (S/N, single beam, RFI labels, 10 s "
+                                                     "minimum) to be agreed"],
+           ["Compress FBH5 chunks in parallel", "the single-thread writer capped recording at about 50 MB/s; same "
+                                                "bytes, written chunk by chunk"],
            ["Production: one RTX PRO 6000 per board, 3 servers", "all stages bandwidth-bound; 3.3 GB10-equivalents per "
                                                                  "board at 1.16 Hz against 4.1 per card at 70 %"]],
           [0.38, 0.62], "The main design decisions.")
@@ -1149,11 +1187,12 @@ def content():
       "choices of §11.",
       "<b>Production hardware</b>: port the runtime to x86 with GPUDirect, then test on one RTX PRO 6000 server "
       "before buying (§11).",
-      "<b>Search</b>: the live search works; next a zero-drift filter, clustering of hits across windows and beams, "
-      "hits as triggers for raw-voltage dumps, and heimdall for wideband transients fed from the coarse data. "
-      "hyperseti's shift rounding should be reported upstream.",
-      "<b>Recording rate</b>: the spectra writer compresses on one thread at about 50 MB/s, which limits recording "
-      "at integrations shorter than 1 s or channels finer than 1.2 kHz; compress chunks in parallel.",
+      "<b>Search</b>: the live search drops stationary hits and can trigger dumps (off). Next: agree the trigger "
+      "rules, cluster hits across windows and boards, a longer raw-voltage buffer if triggers should capture the "
+      "window itself, and heimdall for wideband transients from the coarse data. hyperseti's shift rounding should "
+      "be reported upstream.",
+      "<b>Recording rate</b>: the spectra writer manages about 160 MB/s on four threads; 149–298 Hz channels at "
+      "0.1 s need more threads or cores.",
       "<b>Pause frames</b>: test whether the board honours them; if it did, NIC buffer overflows would become short "
       "delays instead of loss.",
       "<b>Flags</b>: missing data is counted per spectrum; a channel and time mask is the next step, seeded from the "
@@ -1193,6 +1232,7 @@ def content():
            ["Search hits, live", "&lt;data&gt;/hits/&lt;board&gt;/live_&lt;stream&gt;_&lt;UTC&gt;.csv and "
                                  ".windows.jsonl"],
            ["Search hits, files", "&lt;data&gt;/hits/&lt;board&gt;/&lt;file&gt;.csv"],
+           ["Triggers", "&lt;data&gt;/triggers.log (manual, board and search triggers)"],
            ["Effective observation", "&lt;run&gt;/observation.yaml"],
            ["Run records", "&lt;data&gt;/runs/&lt;UTC&gt;_&lt;board&gt;_&lt;source&gt;/: logs, plan.txt, "
                            "status.jsonl, nic-&lt;link&gt;.csv, triggers.log"],
