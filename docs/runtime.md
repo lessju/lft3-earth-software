@@ -5,6 +5,7 @@ Spark. The operator's view (commands, files, troubleshooting) is in `docs/user_g
 
 Status (2026-11-13): implemented, unit-tested, running on the live board. Live result: 60.8 Gb/s, zero loss,
 1 s fine spectra, quick-look and triggered raw-voltage dumps. It replaced the CyberEther plugin.
+2026-11-20: live narrowband drift search on the spectra in GPU memory (§4.6, decisions 16–18).
 
 ## 1. The picture
 
@@ -26,6 +27,11 @@ Status (2026-11-13): implemented, unit-tested, running on the live board. Live r
  FFT 128 → |X|²+|Y|² → 1 s    trigger → copy window      optional, fast quick-look    Python/CuPy via lft3.ring)
  → FBH5 fine + coarse         → GUPPI RAW                → latest snapshot
  + latest snapshot
+ + spectra ring <stream>-spectra (GPU, 64 × 1 s fine spectra, device-to-device copy)
+        │
+        ▼
+ live search (host, search venv): last 64 spectra in its own GPU buffer → hyperseti every 32 spectra
+ → <data_dir>/hits/<board>/live_<stream>_<UTC>.csv + .windows.jsonl
 ```
 
 `lft3-pipeline` (Python) plans and launches these processes as containers (image `lft3-runtime`), one set
@@ -122,6 +128,34 @@ In the order they were made. Each one is backed by a measurement on this machine
 15. **Capture without `--privileged`**: `--cap-add NET_RAW --cap-add IPC_LOCK --device /dev/infiniband` is enough
     for DAQIRI (verified live, 60.84 Gb/s, no loss). This is now the default; `LFT3_CAPTURE_PRIVILEGED=1` restores
     `--privileged`.
+16. **Live search reads spectra from GPU memory, not files** (2026-11-20). The file search (`lft3-search` on
+    FBH5) read, inflated and copied ~1 GB files host → GPU in bursts; decision 13 showed that costs packets at
+    the NIC. The spectrometer already holds every 1 s spectrum on the GPU, so with `--spectra-ring N` it copies
+    it (device to device, 6.3 MB) into a second ring of the same kind (`kind = spectra`, ring version 2), and a
+    Python reader keeps the last `window_spectra` spectra in its own GPU buffer and runs hyperseti on them. Each
+    spectrum crosses the memory bus once more instead of a file round trip. Same lossless/lossy rules as the
+    voltage ring: the search never stalls the spectrometer on a live stream; with `--lossless` (synthetic/file)
+    it does, so tests see every window. Both search paths call one function on one window grid
+    (`lft3.search.core`), so live and file results are comparable bit for bit.
+17. **hyperseti on short windows needs two fixes** (synthetic drifting tones, 2026-11-20).
+    * hyperseti a15f7eb shifts spectrum t of drift trial d by `shift[d] * t / T` in C integer division (truncates
+      toward zero). Over hour-long files that is invisible; over 16 spectra trials ±1 never move any spectrum, so
+      they equal trial 0 and a zero-drift tone was reported at −74.5 Hz/s. `lft3.search.core` recompiles the same
+      kernel with the shift rounded (`patch_dedoppler_rounding`, checked at start-up); worth reporting upstream.
+    * The `stepped` plan's first stage covers N_time channels, i.e. trials far beyond `max_dd` for short windows
+      (ghost hits at 400–600 Hz/s with a 200 Hz/s limit). `optimal` (every trial in ±max_dd) is the default.
+    * 16-spectrum windows give 74.5 Hz/s trial steps and drift estimates good only to ±75 Hz/s; 64-spectrum
+      windows (18.6 Hz/s steps) recover injected drifts to within one step. Default: 64 spectra every 32.
+18. **Live search validated** (synthetic, random GPU noise, drifting tone):
+    * the 5 live windows of a 210 s run are **bit-identical** to the same rows of the FBH5 files (both beams), and
+      `lft3-search` on those files gives the **identical hit list** (frequency, drift, S/N, channel);
+    * +50 Hz/s at amplitude 1 → one hit per window at 37.3/55.9 Hz/s, S/N 143, frequency on the injected track;
+      −120 Hz/s at amplitude 0.5 → −111.8/−130.4 Hz/s, S/N 33–38 (expected ≈ 36); no hits in the tone-free beam
+      (5 windows × 786 432 channels × 21 trials at S/N 20);
+    * 2 % dropped packets → measured missing fraction 2.00 %, every window skipped and logged;
+    * cost: 0.38 s per window (both beams) per 32 s step, ~1.2 % duty; at 5.5× real time (`--fast`) it kept up
+      with lag 0; hits are written ≈ 0.5 s after a window's last spectrum;
+    * live soak on the board: see §6.
 
 ## 3. Code map
 
@@ -135,6 +169,7 @@ In the order they were made. Each one is backed by a measurement on this machine
 | `pipeline/src/capture/scatter.{hh,cu}` | Tiled scatter kernel (32 jobs × 32 channels through shared memory) + CPU job sort |
 | `pipeline/src/capture/daqiri_config.{hh,cc}` | DAQIRI raw-ibverbs RX config: one queue, header/data split, flow rule |
 | `pipeline/src/capture/pcap.{hh,cc}` | Classic pcap reader for the file source |
+| `pipeline/src/capture/synth.{hh,cu}` | Synthetic `--noise random`: non-repeating hashed noise + drifting tone written into each sealed block |
 | `pipeline/src/capture/main.cc` | `lft3-capture`: sources (network/synthetic/file), batches, sealing, publishing, statistics |
 | `pipeline/src/spectrometer/finespec.{hh,cu}` | Fused fine spectrometer: warp FFT (64/128/256 points) or shared-memory FFT (≤ 2048), Stokes I, segment sum; coarse power kernel |
 | `pipeline/src/spectrometer/fbh5_file.{hh,cc}`, `axes.hh` | FBH5 writer (filterbankc99; chunked, shuffle + deflate), frequency axes |
@@ -144,8 +179,11 @@ In the order they were made. Each one is backed by a measurement on this machine
 | `pipeline/bench/ringbench/` | Memory-type and layout benchmarks behind decisions 5 and 6 |
 | `pipeline/bench/capacity/` | Multi-stream capacity benchmark + NIC-DMA memory-load stand-in |
 | `pipeline/docker/Dockerfile` | `lft3-runtime` image: CUDA 13 devel + rdma-core + meson/cmake (also builds `tools/viewer`) |
-| `src/lft3/ring.py` | Python mirror of the control block: status, slot metadata, Prometheus text, dump commands, CuPy access |
-| `src/lft3/search/hyperseti_search.py` | `lft3-search`: hyperseti on finished fine FBH5 files, hits CSV with RFI labels (search venv) |
+| `src/lft3/ring.py` | Python mirror of the control block: status, slot metadata, Prometheus text, dump commands, CuPy access, `RingReader` (registered Python reader) |
+| `src/lft3/search/core.py` | Window grid, coarse-ripple flattening, hyperseti `Searcher` (kernel fix), hit rows: shared by live and file search |
+| `src/lft3/search/live.py` | Live search: registered reader of `<stream>-spectra`, window buffer, hits CSV + windows JSONL |
+| `src/lft3/search/hyperseti_search.py` | `lft3-search`: files (same windows) or `--live`; hits CSV with RFI labels (search venv) |
+| `src/lft3/config.py`, `config/observations/` | Observation config: resolution, integration, products, search, dump, ring (source of truth) |
 | `src/lft3/pipeline/runtime.py` | Run planner: board config + options → per-process `docker run` commands |
 | `src/lft3/cli/pipeline.py` | `lft3-pipeline run / status / trigger / stop` |
 
@@ -231,6 +269,13 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
   deflate 4. That needs the h5dsc99 patch `shuffle_deflate.diff`. Fine spectra are 3.1 MB/s per beam before
   compression and ≈ 2.2 MB/s on disk: ~16 GB/hour per link (2 beams). The coarse product is ~1/128 of that.
 
+* **Spectra ring** (`--spectra-ring N`, set by `lft3-pipeline` when the live search is on): after each
+  integration the accumulator is copied device to device into slot `<stream>-spectra` (float32 [beam][channel],
+  6.3 MB at 1.19 kHz) and published with the window number as `blockIndex`, its first spectrum as `t0`, the
+  missing packets, and flags (bit 0 partial, bit 1 discontinuity before it). The control block carries
+  `kind = spectra`, the FFT length, `fch1`, `foff` and `tsamp`. Windows discarded as overwritten are not
+  published, so the reader sees a gap. Backpressure follows `--lossless`.
+
 ### 4.4 Dump (`lft3-dump`)
 
 * **Trigger**: `trigger <now|UNIX> [pre] [post] [label]` on `/dev/shm/lft3-<stream>-dump.sock`. `lft3-pipeline
@@ -251,7 +296,26 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
 * `run` starts each capture, waits for its ring, then starts its readers. It pumps each process's output to
   `<run_dir>/<stream>-<role>.log`, prints a status line from the rings, appends `status.jsonl`, logs NIC counters
   per link, and optionally serves Prometheus metrics.
-* Stopping (Ctrl-C, `--duration`, `stop`): readers first (they close files), then captures.
+* Stopping (Ctrl-C, `--duration`, `stop`): the live search first, then readers (they close files), then captures.
+* Settings come from the observation config (`config/observations/<name>.yaml`, the station's `observation:`),
+  with command-line overrides; the effective config is written to `<run_dir>/observation.yaml` (and hashed into
+  `config_hash`), and the search reads that file.
+
+### 4.6 Live search (`lft3.search.live`)
+
+* Runs on the host in the search venv (CuPy + hyperseti), not in a container, pinned with `taskset` to the
+  link's non-X925 reader cores; `lft3-pipeline` starts it after the spectrometer, records its pid in
+  `/dev/shm/lft3-<stream>-search.pid`, and stops it with SIGTERM. A failed search is reported and the run goes on.
+* Registers in the spectra ring's reader table from Python (`lft3.ring.RingReader`: CAS through libatomic, a
+  heartbeat thread), so `lft3-pipeline status` and Prometheus show its lag, overruns and window count.
+* Copies each new spectrum into its window buffer (slot `integration % N`), checks the seqlock, and when an
+  integration ends a window of the grid (window k = integrations [k·step, k·step + N)) searches both beams:
+  per gulp of 2^17 channels, divide by the median coarse-channel response, then hyperseti (normalise, blank
+  gulp edges, dedoppler, hit search). A discontinuity, a jump in integration number, an overrun or a capture
+  restart empties the buffer; a window missing more than `max_missing_fraction` of its packets is skipped.
+* Output per run: `live_<stream>_<UTC>.csv` (`lft3.search.core.HIT_COLUMNS`) and `.windows.jsonl` (per window:
+  searched or why not, hits, search time, latency, lag). `--search-save-every K` saves every K-th window as .npy
+  in `<run_dir>/windows/` for bit-exact checks against FBH5.
 
 ## 5. Adding a reader
 
@@ -346,8 +410,10 @@ NIC itself drop packets before any of our code sees them. Leave headroom on the 
 * **Hz resolution** (Nf = 2^16–2^17): a fused path (cuFFT with load/store callbacks, or a custom kernel), gathering
   64–128 blocks per channel row (232 GB/s measured gather); ring ≥ 2 × FFT length (12.9 GB at 2^17). Unmodified
   rawspec is too slow on GB10 (decision 14). Decide the band and output volume first (`docs/architecture.md`).
-* **Searches**: `lft3-search` (hyperseti on finished FBH5 files) works. Next: throttle it, or run it off the capture
-  host (decision 13); a live search reading spectra from a ring instead of files; heimdall from coarse detection.
+* **Searches**: live search on the spectra ring done (decisions 16–18). Next: hits → triggers (GPU narrowband
+  trigger into `lft3-dump`), cross-window/cross-beam hit clustering and RFI rejection, report the hyperseti
+  kernel issue upstream, heimdall from coarse detection. At Hz resolution the search window holds
+  2^20 channels per beam and costs ~2 GB10 per stream (docs/sizing.md).
 * **Second board on the same Spark** (its link on the other QSFP port; the config mechanism is the commented `link1`
   entry in `config/boards/rfsoc0.yaml`, moved to that board's YAML). Confirm its PCI function, UDP
   port and source IP when it is cabled.

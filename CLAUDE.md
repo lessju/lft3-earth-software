@@ -36,12 +36,17 @@ Key firmware-side files:
     health), `capture.py` (FFT/ADC snapshots, DDR dump receiver), `sensors.py` (rails/temps over SSH).
   * `pipeline/runtime.py`: plans a run (per link: capture + readers as `docker run` commands; `lft3-pipeline`).
   * `ring.py`: Python mirror of the runtime's ring control block (status, Prometheus, dump commands, CuPy access).
+  * `search/`: `core.py` (window grid, ripple flattening, hyperseti `Searcher` with the dedoppler rounding fix),
+    `live.py` (live search on the spectra ring), `hyperseti_search.py` (`lft3-search`: files or `--live`).
   * `products/`: `fbh5.py` (read spectra by freq/time range, `flatten` coarse-channel ripple), `captures.py`
     (capture HDF5), `plot.py` (Agg PNGs; `lft3-plot`).
   * `monitoring/metrics.py`: Prometheus text + JSON lines; `config.py`: station + board configs; `cli/`: entry points.
 * `tests/`: pytest with a fake casperfpga (`conftest.py` records every write). `tests/hardware/`: marker
   `hardware`, deselected by default, read-only against the live board.
-* `config/station.yaml` (boards, data_dir) + `config/boards/<name>.yaml` (incl. `receiver:` host side, `timing:`).
+* `config/station.yaml` (boards, data_dir, `observation:`) + `config/boards/<name>.yaml` (incl. `receiver:` host side,
+  `timing:`) + `config/observations/<name>.yaml` (**processing source of truth**: fine channels/resolution,
+  integration, products, search window/drift/S/N, dump, ring; `lft3.config.load_observation_config`). CLI options
+  override single values per run; the effective config goes to `<run_dir>/observation.yaml`.
 * `pipeline/`: C++20/CUDA real-time runtime (meson, catch2): `lft3-capture`, `lft3-spectrometer`, `lft3-dump`;
   builds in the `lft3-runtime` container (`pipeline/docker/Dockerfile`), binaries in `pipeline/build/`.
 * `scripts/`: host shell scripts (link setup, NIC counters). `docs/`: see README.md table.
@@ -59,7 +64,7 @@ make pipeline        # C++/CUDA runtime build in the lft3-runtime container;  ma
 lft3-board status | start | snapshot fft|adc [--plot] | capture [--ddr-size 0xFFFFF] | sync | trigger
 lft3-pipeline run [--source network|synthetic|file --file X.pcap --loop] [--links link0] [--duration S]
 lft3-pipeline status | trigger [--pre --post --label] | stop
-lft3-search FILE.h5 | --watch [--once]      # hyperseti (search venv, linked); not during live capture
+lft3-search FILE.h5 | --watch [--once] | --live --stream S   # hyperseti (search venv); file modes not during live capture
 lft3-plot info|spectrum|waterfall|capture FILE [--fmin --fmax --flatten];  lft3-plot latest
 lft3-pcap check cap.pcap | synth out.pcap
 scripts/clean_data.sh [--yes] [--older-than DAYS] [--only spectra|hits|runs|dumps|captures]   # dry run without --yes
@@ -214,6 +219,24 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 * Reference outputs: `/opt/lft3arth/data/reference/` (CyberEther synthetic run and runtime runs).
 * Hz-level resolution needs a cuFFT path gathering blocks (232 GB/s measured); docs/architecture.md sizing applies.
 
+## Live drift search (2026-11-20; docs/runtime.md decisions 16-18, §4.6)
+
+* `lft3-spectrometer --spectra-ring N` copies each 1 s spectrum D2D into GPU ring `<stream>-spectra` (ring
+  **version 2**: `kind`, FFT length, fch1/foff/tsamp at offsets 528..559; Python `Ring` still reads v1 rings).
+  `lft3.search.live` (host process, search venv, `taskset` to A725 reader cores) registers via
+  `lft3.ring.RingReader` (libatomic CAS + heartbeat thread), keeps the last N spectra in its own buffer, searches
+  window k = integrations [k·step, k·step+N). Started/stopped by `lft3-pipeline` (pid file
+  `/dev/shm/lft3-<stream>-search.pid`); a failing search does not end the run.
+* **hyperseti a15f7eb dedoppler truncates** `shift*t/T` (C int division): on short windows trials ±1 equal 0
+  (0 Hz/s reported as −74.5). `core.patch_dedoppler_rounding` recompiles it rounded. The `stepped` plan adds
+  trials far beyond max_dd on short windows → `optimal`. 16-spectrum windows only give ±75 Hz/s; default 64/32.
+* Validated (synthetic `--random-noise`: hashed GPU noise + drifting tone, `capture/synth.cu`): live windows
+  bit-identical to FBH5, live hits == `lft3-search` file hits; +50 Hz/s → 37/56 Hz/s at S/N 143 (amp 1),
+  −120 → −112/−130 at S/N ~36 (amp 0.5), no false hits in the empty beam; 2 % drops → windows skipped;
+  0.38 s per window per 32 s, kept up at 5.5× real time. Live soak: see docs/runtime.md §6.
+* The old periodic synthetic generator repeats every block → integrated spectra never fluctuate: useless for
+  searches (fixed pattern adds coherently). Use `--random-noise` for anything search-related.
+
 ## Board M&C findings (docs/monitoring_control.md)
 
 * **The lab PPS is temporary, not fixed properly** (`timing.pps: temporary`). The clock measures −24.6 ppm
@@ -292,6 +315,7 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 ## Known gaps
 
 * Nothing synthesises ADC packets on port 40000 yet (`lft3-pcap synth` emits channel packets only).
+* Live search hits are not yet turned into triggers, clustered across windows/beams, or RFI-filtered beyond labels.
 * Frequency sign is confirmed by the 125 MHz spurs; the input → beam/pol mapping still needs an injected tone.
 
 ## Working conventions

@@ -165,3 +165,51 @@ TEST_CASE("Ring: readers see the writer stop", "[lft3][ring][cuda]") {
     RingReader late;
     REQUIRE_FALSE(late.attach(cfg.stream, "late", false, 0.2, error));
 }
+
+TEST_CASE("Ring: a spectra ring carries its kind, axes and a custom slot size", "[lft3][ring][cuda]") {
+    if (!HaveGpu()) SKIP("No CUDA device.");
+    RingConfig cfg = SmallRing("spectra");
+    cfg.stream += "-spectra";
+    cfg.kind = RingKind::Spectra;
+    cfg.layout.spectraPerBlock = 149 * 1024;
+    cfg.blockBytes = 2 * 1024 * 128 * sizeof(float);
+    cfg.fineChannelsPerCoarse = 128;
+    cfg.fch1MHz = 1500.0;
+    cfg.foffMHz = 0.00119209;
+    cfg.tsampS = 0.99992;
+    RingWriter w;
+    std::string error;
+    REQUIRE(w.create(cfg, error));
+    w.setRunning();
+    RingReader r;
+    REQUIRE(r.attach(cfg.stream, "search", false, 5.0, error));
+    const RingControl& c = r.control();
+    REQUIRE(c.version == 2);
+    REQUIRE(c.kind == static_cast<std::uint32_t>(RingKind::Spectra));
+    REQUIRE(c.blockBytes == cfg.blockBytes);
+    REQUIRE(c.fineChannelsPerCoarse == 128);
+    REQUIRE(c.fch1MHz == 1500.0);
+    REQUIRE(c.foffMHz == 0.00119209);
+    REQUIRE(c.tsampS == 0.99992);
+    REQUIRE(c.spectraPerBlock == 149 * 1024);
+
+    const std::int64_t slot = w.acquireSlot();
+    REQUIRE(slot >= 0);
+    std::vector<float> v(2 * 1024 * 128);
+    for (std::size_t i = 0; i < v.size(); i++) v[i] = static_cast<float>(i);
+    REQUIRE(cudaMemcpy(w.blockPtr(slot), v.data(), cfg.blockBytes, cudaMemcpyHostToDevice) == cudaSuccess);
+    RingSlotMeta m;
+    m.blockIndex = 42;
+    m.t0 = 42ULL * 149 * 1024;
+    m.flags = kSlotFlagNewRun;
+    w.publish(slot, m);
+    REQUIRE(r.wait(0, 1000) == RingReader::Wait::Ready);
+    RingSlotMeta got;
+    const std::uint8_t* data = nullptr;
+    REQUIRE(r.begin(0, got, data));
+    REQUIRE(got.blockIndex == 42);
+    REQUIRE(got.flags == kSlotFlagNewRun);
+    std::vector<float> back(v.size());
+    REQUIRE(cudaMemcpy(back.data(), data, cfg.blockBytes, cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(back == v);
+}

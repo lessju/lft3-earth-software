@@ -71,7 +71,8 @@ common_dep = declare_dependency(include_directories: inc, link_with: common_lib,
 
 capture_lib = static_library(
     'lft3_capture',
-    ['src/capture/assembler.cc', 'src/capture/daqiri_config.cc', 'src/capture/pcap.cc', 'src/capture/scatter.cu'],
+    ['src/capture/assembler.cc', 'src/capture/daqiri_config.cc', 'src/capture/pcap.cc', 'src/capture/scatter.cu',
+     'src/capture/synth.cu'],
     include_directories: inc,
     dependencies: [cuda_dep, daqiri_dep],
     cuda_args: cuda_arch_args,

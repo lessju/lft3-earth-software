@@ -1,6 +1,8 @@
-"""Read the real-time runtime's voltage rings from Python (status, metrics, triggers, and GPU data access).
+"""Read the real-time runtime's rings from Python (status, metrics, triggers, and GPU data access).
 
-Each lft3-capture process owns one ring (docs/runtime.md, docs/runtime_guide.md):
+Each lft3-capture process owns one voltage ring ``<board>-<link>``; a spectrometer started with
+``--spectra-ring N`` owns a spectra ring ``<board>-<link>-spectra`` (one integrated fine spectrum per slot,
+float32 [beam][channel], for the live search). Both use the same layout (docs/runtime.md):
 
 * control plane ``/dev/shm/lft3-<stream>``: a fixed binary layout (``RingControl`` in
   ``pipeline/src/common/ring.hh``) with the layout, publication head, per-slot metadata, reader cursors and
@@ -29,7 +31,11 @@ from pathlib import Path
 
 SHM_DIR = Path("/dev/shm")
 MAGIC = 0x4C46543352494E47
-VERSION = 1
+VERSION = 2
+KIND_VOLTAGES, KIND_SPECTRA = 0, 1
+KINDS = {KIND_VOLTAGES: "voltages", KIND_SPECTRA: "spectra"}
+FLAG_PARTIAL, FLAG_NEW_RUN = 1, 2       # slot flags (spectra ring: FLAG_NEW_RUN = discontinuity before this one)
+READER_TIMEOUT_NS = 5_000_000_000
 MAX_READERS = 16
 MAX_SLOTS = 4096
 CONTROL_BYTES = 576 + MAX_READERS * 128 + MAX_SLOTS * 8 + MAX_SLOTS * 128
@@ -55,18 +61,29 @@ def dump_socket_path(stream: str) -> Path:
     return SHM_DIR / f"lft3-{stream}-dump.sock"
 
 
-def list_streams() -> list[str]:
-    """Streams with a control block in /dev/shm (running or recently stopped captures)."""
+def list_streams(kind: str | None = None) -> list[str]:
+    """Rings with a control block in /dev/shm (running or recently stopped). kind: "voltages" | "spectra" | None."""
     out = []
     for p in sorted(SHM_DIR.glob("lft3-*")):
-        if p.suffix == ".sock" or not p.is_file():
+        if p.suffix in (".sock", ".pid") or not p.is_file():
             continue
         try:
-            if p.stat().st_size == CONTROL_BYTES:
-                out.append(p.name[len("lft3-"):])
+            if p.stat().st_size != CONTROL_BYTES:
+                continue
+            if kind is not None:
+                with open(p, "rb") as fh:
+                    head = fh.read(560)
+                if len(head) < 532 or KINDS.get(struct.unpack_from("<I", head, 528)[0]) != kind:
+                    continue
+            out.append(p.name[len("lft3-"):])
         except OSError:
             pass
     return out
+
+
+def spectra_stream(stream: str) -> str:
+    """Name of the spectra ring of a voltage stream."""
+    return f"{stream}-spectra"
 
 
 def _cstr(b: bytes) -> str:
@@ -121,10 +138,21 @@ class RingStatus:
     writer_heartbeat_age_s: float
     stats: dict = field(default_factory=dict)
     readers: list = field(default_factory=list)
+    kind: str = "voltages"
+    fine_channels_per_coarse: int = 0     # spectra ring: FFT length
+    fch1_mhz: float = 0.0                 # spectra ring: frequency axis of the published spectra
+    foff_mhz: float = 0.0
+    tsamp_s: float = 0.0                  # spectra ring: integration time per slot
 
     @property
     def ring_seconds(self) -> float:
+        """Time covered by the ring (spectra ring: spectra_per_block = spectra per integration)."""
         return self.slots * self.spectra_per_block / 152587.890625
+
+    @property
+    def channels_out(self) -> int:
+        """Values per beam in one slot (spectra ring)."""
+        return self.block_bytes // (4 * 2) if self.kind == "spectra" else 0
 
     @property
     def rate_gbps(self) -> float:
@@ -149,7 +177,9 @@ class Ring:
         finally:
             os.close(fd)
         magic, version, size = struct.unpack_from("<QII", self._mm, 0)
-        if magic != MAGIC or version != VERSION or size != CONTROL_BYTES:
+        # Version 1 (before the spectra ring) differs only in bytes 528..575, which were reserved (zero = voltages):
+        # still readable, so status works against a run started with older binaries.
+        if magic != MAGIC or version not in (1, VERSION) or size != CONTROL_BYTES:
             self._mm.close()
             raise ValueError(f"{path}: magic/version {magic:#x}/{version} not supported (want version {VERSION})")
         self._cuda = None
@@ -183,6 +213,7 @@ class Ring:
         head, _pid, hb = struct.unpack_from("<QQQ", m, 368)
         start = struct.unpack_from("<d", m, 392)[0]
         stats = dict(zip(STAT_NAMES, struct.unpack_from("<16Q", m, 400)))
+        kind, nfine, fch1, foff, tsamp = struct.unpack_from("<IIddd", m, 528)
         now = _monotonic_ns()
         readers = []
         for i in range(MAX_READERS):
@@ -195,7 +226,8 @@ class Ring:
             readers.append(ReaderStatus(name, bool(lossless), cursor, lag, read, over, busy / 1e6, outputs,
                                         max(0.0, (now - rhb) / 1e9)))
         return RingStatus(stream, STATES.get(state, str(state)), obs, software, board_id, nco, cs, cc, spb, slots,
-                          bb, rb, head, t0, start, max(0.0, (now - hb) / 1e9), stats, readers)
+                          bb, rb, head, t0, start, max(0.0, (now - hb) / 1e9), stats, readers,
+                          KINDS.get(kind, str(kind)), nfine, fch1, foff, tsamp)
 
     def slot_meta(self, seq: int) -> SlotMeta | None:
         """Metadata of published block `seq`, or None if it is no longer (or not yet) in the ring."""
@@ -224,9 +256,170 @@ class Ring:
         arr = cupy.ndarray((st.slots, st.block_bytes), cupy.uint8, cupy.cuda.MemoryPointer(mem, 0))
         return arr
 
+    def spectra(self):
+        """A spectra ring as a read-only CuPy float32 array of shape (slots, beams, channels)."""
+        st = self.status()
+        if st.kind != "spectra":
+            raise ValueError(f"{self.stream} is a {st.kind} ring")
+        return self.voltages().view("float32").reshape(st.slots, 2, st.channels_out)
+
     def slot_index(self, seq: int) -> int | None:
         meta = self.slot_meta(seq)
         return None if meta is None else self._u64(OFF_SEQ_TO_SLOT + (seq % MAX_SLOTS) * 8)
+
+
+class RingReader:
+    """A registered reader of a ring from Python: it appears in the ring's reader table (status, lag, overruns)
+    and, with lossless=True, the writer waits for it when backpressure is on (synthetic / file sources).
+
+        with RingReader("rfsoc0-link0-spectra", "search") as rd:
+            while True:
+                seq = rd.cursor
+                if not rd.wait(seq, 1.0): continue
+                meta, slot = rd.begin(seq)        # None if overwritten (overrun)
+                ... read rd.ring.spectra()[slot] on the GPU, synchronise ...
+                ok = rd.still_valid(seq)
+                rd.consumed(seq + 1)
+
+    The entry is claimed with an atomic compare-and-swap (libatomic) like the C++ readers. A thread refreshes
+    the heartbeat every second, so a long GPU search does not make the writer treat this reader as dead.
+    """
+
+    def __init__(self, stream: str, name: str, lossless: bool = False, timeout: float = 30.0):
+        t_end = time.time() + timeout
+        while True:
+            try:
+                self.ring = Ring(stream)
+                break
+            except (OSError, ValueError):
+                if time.time() > t_end:
+                    raise
+                time.sleep(0.2)
+        fd = os.open(str(shm_path(stream)), os.O_RDWR)
+        try:
+            self._mm = mmap.mmap(fd, CONTROL_BYTES, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+        finally:
+            os.close(fd)
+        self._buf = (ctypes.c_char * CONTROL_BYTES).from_buffer(self._mm)
+        self._base = ctypes.addressof(self._buf)
+        self.entry = -1
+        self.name = name
+        me = os.getpid() | (1 << 63)
+        now = _monotonic_ns()
+        for i in range(MAX_READERS):
+            o = OFF_READERS + i * 128
+            cur = self._load(o)
+            if cur != 0 and now - self._load(o + 16) < READER_TIMEOUT_NS:
+                continue
+            if _cas_u64(self._base + o, cur, me):
+                self._store(o + 8, self.ring.head)          # cursor
+                self._store(o + 16, now)                    # heartbeat
+                struct.pack_into("<I", self._mm, o + 24, 1 if lossless else 0)
+                raw = name.encode()[:31]
+                self._mm[o + 32:o + 64] = raw + b"\0" * (32 - len(raw))
+                for k in range(5):                           # blocksRead, overruns, lag, busy, outputs
+                    self._store(o + 64 + 8 * k, 0)
+                self.entry = i
+                break
+        if self.entry < 0:
+            self.close()
+            raise RuntimeError(f"{stream}: all {MAX_READERS} reader entries are in use")
+        self._o = OFF_READERS + self.entry * 128
+        self._stop = False
+        import threading
+        self._beat = threading.Thread(target=self._heartbeat_loop, name="ring-heartbeat", daemon=True)
+        self._beat.start()
+
+    # 8-byte aligned loads/stores through ctypes are single instructions on aarch64 / x86-64.
+    def _load(self, off: int) -> int:
+        return ctypes.c_uint64.from_address(self._base + off).value
+
+    def _store(self, off: int, value: int) -> None:
+        ctypes.c_uint64.from_address(self._base + off).value = value
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop:
+            self._store(self._o + 16, _monotonic_ns())
+            time.sleep(1.0)
+
+    @property
+    def cursor(self) -> int:
+        return self._load(self._o + 8)
+
+    def wait(self, seq: int, timeout: float) -> bool:
+        """True once block/spectrum `seq` is published (polls; the cadence of spectra is ~1 s)."""
+        t_end = time.time() + timeout
+        while self.ring.head <= seq:
+            if time.time() >= t_end or self.ring.status().state == "stopped":
+                return self.ring.head > seq
+            time.sleep(0.01)
+        return True
+
+    def oldest_readable(self, margin: int = 8) -> int:
+        st = self.ring.status()
+        keep = st.slots - margin if st.slots > margin else 1
+        return max(0, st.head - keep)
+
+    def begin(self, seq: int):
+        """(SlotMeta, slot index) of published `seq`, or None if it was already overwritten."""
+        meta = self.ring.slot_meta(seq)
+        if meta is None:
+            return None
+        slot = self.ring._u64(OFF_SEQ_TO_SLOT + (seq % MAX_SLOTS) * 8)
+        return meta, slot
+
+    def still_valid(self, seq: int) -> bool:
+        return self.ring.slot_meta(seq) is not None
+
+    def consumed(self, next_seq: int, busy_ns: int = 0, outputs: int | None = None) -> None:
+        self._store(self._o + 8, next_seq)
+        head = self.ring.head
+        self._store(self._o + 64 + 16, head - next_seq if head > next_seq else 0)   # lagBlocks
+        if busy_ns:
+            self._store(self._o + 64 + 24, busy_ns)
+        if outputs is not None:
+            self._store(self._o + 64 + 32, outputs)
+        self._store(self._o + 16, _monotonic_ns())
+
+    def add(self, field_index: int, n: int) -> None:
+        """Add to blocksRead (0) or overruns (1)."""
+        off = self._o + 64 + 8 * field_index
+        self._store(off, self._load(off) + n)
+
+    def close(self) -> None:
+        self._stop = True
+        if getattr(self, "entry", -1) >= 0:
+            struct.pack_into("<I", self._mm, self._o + 24, 0)
+            self._store(self._o, 0)
+            self.entry = -1
+        if getattr(self, "_buf", None) is not None:
+            del self._buf
+            self._buf = None
+            self._mm.close()
+        if getattr(self, "ring", None) is not None:
+            self.ring.close()
+            self.ring = None
+
+    def __enter__(self) -> RingReader:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+_libatomic = None
+
+
+def _cas_u64(address: int, expected: int, desired: int) -> bool:
+    """Atomic 64-bit compare-and-swap at `address` (libatomic's __atomic_compare_exchange_8)."""
+    global _libatomic
+    if _libatomic is None:
+        _libatomic = ctypes.CDLL("libatomic.so.1")
+        _libatomic.__atomic_compare_exchange_8.restype = ctypes.c_bool
+        _libatomic.__atomic_compare_exchange_8.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64,
+                                                           ctypes.c_bool, ctypes.c_int, ctypes.c_int]
+    exp = ctypes.c_uint64(expected)
+    return bool(_libatomic.__atomic_compare_exchange_8(address, ctypes.addressof(exp), desired, False, 5, 5))
 
 
 class _VmmImport:
@@ -322,6 +515,15 @@ def to_prometheus(statuses: list[RingStatus]) -> str:
 
     for st in statuses:
         s = st.stream
+        if st.kind == "spectra":
+            g("spectra_ring_head", st.head, stream=s)
+            for r in st.readers:
+                g("reader_lag_spectra", r.lag_blocks, stream=s, reader=r.name)
+                g("reader_overruns_total", r.overruns, stream=s, reader=r.name)
+                g("reader_outputs_total", r.outputs, stream=s, reader=r.name)
+                g("reader_busy_ms", r.busy_ms, stream=s, reader=r.name)
+                g("reader_heartbeat_age_seconds", r.heartbeat_age_s, stream=s, reader=r.name)
+            continue
         g("ring_running", 1 if st.state == "running" else 0, stream=s)
         g("ring_head_blocks", st.head, stream=s)
         g("ring_slots", st.slots, stream=s)

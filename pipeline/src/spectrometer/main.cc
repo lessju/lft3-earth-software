@@ -3,6 +3,10 @@
 //   fine mode    fftLength-point FFT per coarse channel, |X|^2 + |Y|^2 (Stokes I), integrated over N blocks
 //   coarse mode  power per board channel (no FFT), for quick-look products; optional "latest" snapshot files
 //
+// With --spectra-ring N every finished integration is also copied (device to device) into the spectra ring
+// "<stream>-spectra" of N slots in GPU memory, for the live search (lft3.search.live). The spectra ring has
+// backpressure when this reader is --lossless (synthetic / file tests), so a lossless search sees every spectrum.
+//
 // Integrations are aligned to absolute block numbers (window w = blocks [w*N, (w+1)*N)), so every reader and
 // every link agrees on the time grid. A reader that attaches mid-window starts at the next boundary.
 // Missing data (zero-filled packets, blocks the capture skipped, blocks this reader lost to lag) is counted
@@ -49,13 +53,14 @@ const char* kUsage = R"(lft3-spectrometer --stream NAME [options]
   --source-name S --telescope-id N --machine-id N
   --name NAME --lossless        reader name; lossless: capture waits for this reader (synthetic/file only)
   --attach-timeout S            (default 30)
+  --spectra-ring N              also publish every spectrum into the GPU ring <stream>-spectra of N slots
 )";
 
 struct Options {
     std::string stream, name, mode = "fine", outputDir = ".", prefix = "lft3", latestDir, coarseDir, sourceName = "LFT3";
     std::uint32_t fftLength = 128, binsPerOutput = 1, beamOffset = 0;
     double integrationS = 1.0, ncoMHz = 0.0, syncTimeUnix = 0.0, attachTimeout = 30.0;
-    std::uint64_t integrationBlocks = 0, spectraPerFile = 3600;
+    std::uint64_t integrationBlocks = 0, spectraPerFile = 3600, spectraRing = 0;
     int telescopeId = 0, machineId = 0;
     bool record = true, lossless = false;
 };
@@ -393,6 +398,39 @@ int Run(const Options& o) {
     CUDA_OK(cudaMallocHost(&hostOut, outBytes), "cudaMallocHost");
 
     Writer writer(o, l, ctl.boardId, ctl.ncoMHz, channelsOut, N * T, ctl);
+
+    // Spectra ring for the live search: one integration per slot, float32 [beam][channel].
+    RingWriter specRing;
+    const bool publishSpectra = o.spectraRing > 0;
+    if (publishSpectra) {
+        RingConfig rc;
+        rc.stream = o.stream + "-spectra";
+        rc.layout = l;
+        rc.layout.spectraPerBlock = N * T;
+        rc.slots = o.spectraRing;
+        rc.boardId = ctl.boardId;
+        rc.ncoMHz = o.ncoMHz != 0.0 ? o.ncoMHz : ctl.ncoMHz;
+        rc.obsId = ctl.obsId;
+        rc.configHash = ctl.configHash;
+        rc.backpressure = o.lossless;
+        rc.kind = RingKind::Spectra;
+        rc.blockBytes = outBytes;
+        const std::uint64_t perCoarse = fine ? o.fftLength : 1;
+        rc.fineChannelsPerCoarse = static_cast<std::uint32_t>(perCoarse >= o.binsPerOutput ? perCoarse / o.binsPerOutput : 1);
+        if (rc.ncoMHz != 0.0) {
+            const auto axes = ComputeFineAxes(rc.ncoMHz, l.channelStart, l.channelCount, perCoarse);
+            rc.foffMHz = axes.foffMHz * o.binsPerOutput;
+            rc.fch1MHz = axes.fch1MHz + 0.5 * (o.binsPerOutput - 1) * axes.foffMHz;
+        }
+        rc.tsampS = static_cast<double>(N * T) / kSpectraPerSecond;
+        if (!specRing.create(rc, error)) {
+            LFT3_ERROR("spectra ring: %s", error.c_str());
+            return 1;
+        }
+        specRing.setRunning();
+        LFT3_INFO("spectra ring '%s': %lu slots x %.1f MB in GPU memory%s", rc.stream.c_str(),
+                  static_cast<unsigned long>(rc.slots), outBytes / 1e6, rc.backpressure ? " (backpressure)" : "");
+    }
     LFT3_INFO("%s mode, %s, %lu blocks (%.4f s) per spectrum, %lu channels x %lu beams -> %s", o.mode.c_str(),
               fine ? ("FFT " + std::to_string(o.fftLength) + " (" + std::to_string(kCoarseChannelHz / o.fftLength) + " Hz)").c_str()
                    : "coarse power",
@@ -421,14 +459,27 @@ int Run(const Options& o) {
         }
         Product p;
         p.data = writer.acquire();
-        cudaMemcpyAsync(hostOut, accum, outBytes, cudaMemcpyDeviceToHost, stream);
-        cudaStreamSynchronize(stream);
-        std::memcpy(p.data->data(), hostOut, outBytes);
         p.window = window;
         p.startT = window * N * T;
         p.missing = missing + (N - blocks) * packetsPerBlock;
         p.newRun = newRun || (lastEmitted != ~0ULL && window != lastEmitted + 1);
         p.meta = first;
+        std::int64_t specSlot = -1;
+        if (publishSpectra && (specSlot = specRing.acquireSlot()) >= 0) {
+            cudaMemcpyAsync(specRing.blockPtr(specSlot), accum, outBytes, cudaMemcpyDeviceToDevice, stream);
+        }
+        cudaMemcpyAsync(hostOut, accum, outBytes, cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
+        std::memcpy(p.data->data(), hostOut, outBytes);
+        if (specSlot >= 0) {
+            RingSlotMeta m = first;
+            m.blockIndex = window;
+            m.t0 = p.startT;
+            m.missingPackets = p.missing;
+            m.flags = (p.missing ? kSlotFlagPartial : 0) | (p.newRun ? kSlotFlagNewRun : 0);
+            if (o.syncTimeUnix > 0.0) m.unixTimeAtT0 = o.syncTimeUnix;
+            specRing.publish(specSlot, m);
+        }
         writer.push(p);
         newRun = false;
         lastEmitted = window;
@@ -437,6 +488,7 @@ int Run(const Options& o) {
     };
 
     while (!StopRequested().load()) {
+        if (publishSpectra) specRing.heartbeat();
         const auto w = ring.wait(seq, 200);
         if (w == RingReader::Wait::Stopped) {
             LFT3_INFO("capture stopped");
@@ -519,6 +571,7 @@ int Run(const Options& o) {
     }
     emit();   // a window cut short by the end of the stream is written with its missing blocks counted
     writer.stop();
+    if (publishSpectra) specRing.close();   // readers see "stopped" and can drain what was published
     LFT3_INFO("done: read %lu blocks, %lu spectra, overruns %lu", static_cast<unsigned long>(read),
               static_cast<unsigned long>(emitted), static_cast<unsigned long>(overruns));
     cudaFree(accum);
@@ -556,6 +609,7 @@ int main(int argc, char** argv) {
     o.machineId = static_cast<int>(a.i64("machine-id", 0));
     o.lossless = a.flag("lossless");
     o.attachTimeout = a.f64("attach-timeout", 30.0);
+    o.spectraRing = static_cast<std::uint64_t>(a.i64("spectra-ring", 0));
     if (a.has("help") || o.stream.empty() || (o.mode != "fine" && o.mode != "coarse") || o.binsPerOutput == 0 ||
         o.prefix.empty() || o.prefix.find('/') != std::string::npos) {
         std::fputs(kUsage, stderr);

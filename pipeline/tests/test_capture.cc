@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <complex>
 #include <cstring>
 #include <random>
@@ -11,6 +12,7 @@
 #include "capture/assembler.hh"
 #include "capture/pcap.hh"
 #include "capture/scatter.hh"
+#include "capture/synth.hh"
 #include "common/layout.hh"
 #include "common/packet.hh"
 
@@ -298,4 +300,67 @@ TEST_CASE("pcap reader extracts LFT3 channel packets", "[lft3][receiver][pcap]")
     REQUIRE(out.payloads[kPayloadBytes] == 9);
     REQUIRE_FALSE(ReadPcapChannelPackets(path, 12345, out, error));
     std::remove(path.c_str());
+}
+
+TEST_CASE("Random synthetic source: GPU block matches the host reference, no repeats, tone where asked",
+          "[lft3][capture][synth][cuda]") {
+    int n = 0;
+    if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) SKIP("No CUDA device.");
+    SynthParams p;
+    p.channelCount = 1024;
+    p.spectraPerBlock = 64;
+    p.channelStart = 2048;
+    p.seed = 7;
+    p.toneChannel = 2048 + 100;
+    p.toneInput = 3;                  // beam 1, pol Y with the default mapping
+    p.toneAmplitude = 40.0;
+    p.toneFrequency = 0.125;
+    p.toneChirp = 1e-6;
+    const std::size_t bytes = 2ULL * p.channelCount * p.spectraPerBlock * 4;
+    std::uint8_t* d = nullptr;
+    REQUIRE(cudaMalloc(&d, 2 * bytes) == cudaSuccess);
+    REQUIRE(LaunchSynthesizeBlock(d, 5, p, nullptr) == cudaSuccess);
+    REQUIRE(LaunchSynthesizeBlock(d + bytes, 6, p, nullptr) == cudaSuccess);
+    std::vector<std::int8_t> h(2 * bytes / 1);
+    REQUIRE(cudaMemcpy(h.data(), d, 2 * bytes, cudaMemcpyDeviceToHost) == cudaSuccess);
+    cudaFree(d);
+    Layout l;
+    l.channelStart = p.channelStart;
+    l.channelCount = p.channelCount;
+    l.spectraPerBlock = p.spectraPerBlock;
+    std::size_t mismatches = 0, toneMismatches = 0, same = 0;
+    double sumsq = 0.0;
+    for (std::uint32_t beam = 0; beam < 2; beam++) {
+        for (std::uint32_t c = 0; c < p.channelCount; c += 7) {
+            for (std::uint32_t t = 0; t < p.spectraPerBlock; t++) {
+                for (std::uint32_t pol = 0; pol < 2; pol++) {
+                    std::int8_t ref[2];
+                    SynthesizeSampleHost(5, beam, c, t, pol, p, ref);
+                    const std::size_t e = l.elementOffset(beam, c, t, pol) * 2;
+                    const bool tone = beam == 1 && pol == 1 && c == 100;
+                    for (int k = 0; k < 2; k++) {
+                        const int diff = std::abs(int(h[e + k]) - int(ref[k]));
+                        if (tone) toneMismatches += diff > 1;   // FMA contraction may move a rounding by one
+                        else mismatches += diff != 0;
+                        if (!tone) sumsq += double(h[e + k]) * h[e + k];
+                        same += h[e + k] == h[bytes + e + k];
+                    }
+                }
+            }
+        }
+    }
+    REQUIRE(mismatches == 0);
+    REQUIRE(toneMismatches == 0);
+    const double samples = 2.0 * 147 * 64 * 2 * 2;   // channels 0, 7, ..., 1022 (147 of them)
+    const double rms = std::sqrt(sumsq / samples);
+    REQUIRE(rms > 7.7);
+    REQUIRE(rms < 8.3);
+    REQUIRE(same < samples * 0.1);   // block 6 is new noise (equal values only by chance, ~5 %)
+    // The tone channel carries ~40 amplitude on beam 1 pol Y only: its power is far above the noise.
+    double tonePow = 0.0;
+    for (std::uint32_t t = 0; t < p.spectraPerBlock; t++) {
+        const std::size_t e = l.elementOffset(1, 100, t, 1) * 2;
+        tonePow += double(h[e]) * h[e] + double(h[e + 1]) * h[e + 1];
+    }
+    REQUIRE(tonePow / p.spectraPerBlock > 1500.0);
 }

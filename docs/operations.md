@@ -49,6 +49,9 @@ are only ADC noise (~12 counts RMS), so the dump is mostly 0 and ±1. For noise-
 
 Full guide: `docs/user_guide.md` (how it works inside: `docs/runtime.md`). Per link of a board: lft3-capture →
 GPU ring → lft3-spectrometer (fine + coarse FBH5) and lft3-dump (GUPPI RAW on trigger), each in its own container.
+With the observation's `search.live` (default) a live hyperseti search reads the spectra from GPU memory and writes
+hits to `<data_dir>/hits/<board>/live_<stream>_<UTC>.csv`. Resolution, integration, products and search
+settings are in `config/observations/<name>.yaml`, named by `config/station.yaml`.
 
 ```bash
 lft3-pipeline run                                   # live stream, 1.19 kHz channels, 1 s spectra, until Ctrl-C
@@ -56,6 +59,9 @@ lft3-pipeline run --duration 600 --integration 10   # 10 minutes of 10 s spectra
 lft3-pipeline run --fft-length 1024 --channels 2048:1024    # 149 Hz channels on coarse channels 2048-3071
 lft3-pipeline run --source file --file cap.pcap --loop      # replay a tcpdump capture (no board needed)
 lft3-pipeline run --source synthetic --no-record    # generated noise + tone (no board needed)
+lft3-pipeline run --source synthetic --random-noise --tone-drift 50 --lossless   # drifting tone for the live search
+lft3-pipeline run --observation NAME                # another config/observations/NAME.yaml
+lft3-pipeline run --no-search                       # without the live drift search
 lft3-pipeline run --dry-run                         # show the docker commands only
 lft3-pipeline status                                # every ring on this host: rate, loss, readers
 lft3-pipeline trigger --label test                  # raw-voltage dump of every link (GUPPI RAW)
@@ -73,7 +79,8 @@ lft3-pipeline run --duration 3600 &
 for i in $(seq 11); do sleep 300; lft3-board trigger; done
 ```
 
-Healthy: `60.8 Gb/s`, `missing packets` flat, readers `lag 0, over 0`. Limits: `--fft-length` ≤ 1024 (one block),
+Healthy: `60.8 Gb/s`, `missing packets` flat, readers `lag 0, over 0`, the spectra ring's `search(lag 0, over 0,
+windows N)` counting up every 32 s. Limits: `--fft-length` ≤ 1024 (one block),
 channel ranges in whole packets (multiples of 1024).
 
 ## 4. Looking at the files (`lft3-plot`)

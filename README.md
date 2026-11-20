@@ -82,5 +82,6 @@ lft3-plot waterfall $(lft3-plot latest) --fmin 2400 --fmax 2425 --flatten
 | Board M&C (`lft3-board`) | station-wide; all commands tested on the live board (start, status, snapshots, DDR dump, MAC, sync) |
 | Pipeline runner, plots (`lft3-pipeline`, `lft3-plot`) | network / synthetic / file sources tested live; status, triggers, metrics |
 | Real-time runtime (`pipeline/`) | live at 60.8 Gb/s; 2 h soak without loss; fine + coarse FBH5, GUPPI RAW dumps; 5 streams per Spark measured |
-| Search (`lft3-search`) | hyperseti on finished FBH5 files; finds the board's spur comb |
-| Hz-resolution path, live searches, coordinator | planned (rawspec too slow on GB10 at 2^17: docs/runtime.md §2) |
+| Search (`lft3-search`) | live: hyperseti on the spectra in GPU memory during the run (validated against the file search, bit-identical windows and hits); files: same windows |
+| Observation config (`config/observations/`) | resolution, integration, products, search: one source of truth for runs and searches |
+| Hz-resolution path, search triggers, coordinator | planned (rawspec too slow on GB10 at 2^17: docs/runtime.md §2) |

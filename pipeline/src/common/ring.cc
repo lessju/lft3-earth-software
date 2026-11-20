@@ -39,6 +39,9 @@ static_assert(offsetof(RingControl, head) == 368);
 static_assert(offsetof(RingControl, writerHeartbeatNs) == 384);
 static_assert(offsetof(RingControl, startUnix) == 392);
 static_assert(offsetof(RingControl, stats) == 400);
+static_assert(offsetof(RingControl, kind) == 528);
+static_assert(offsetof(RingControl, fch1MHz) == 536);
+static_assert(offsetof(RingControl, tsampS) == 552);
 static_assert(offsetof(RingControl, readers) == 576);
 static_assert(offsetof(RingControl, seqToSlot) == 576 + kMaxReaders * 128);
 static_assert(offsetof(RingControl, slot) == 576 + kMaxReaders * 128 + kMaxSlots * 8);
@@ -130,7 +133,7 @@ bool RingWriter::create(const RingConfig& config, std::string& error) {
         error = "slots must be in 16.." + std::to_string(kMaxSlots);
         return false;
     }
-    blockBytes_ = l.bytesPerBlock();
+    blockBytes_ = config.blockBytes ? config.blockBytes : l.bytesPerBlock();
     slots_ = config.slots;
 
     // Data plane: VMM allocation, exportable as a POSIX fd.
@@ -211,6 +214,11 @@ bool RingWriter::create(const RingConfig& config, std::string& error) {
     c.boardId = config.boardId;
     c.ncoMHz = config.ncoMHz;
     c.spectraPerSecond = kSpectraPerSecond;
+    c.kind = static_cast<std::uint32_t>(config.kind);
+    c.fineChannelsPerCoarse = config.fineChannelsPerCoarse;
+    c.fch1MHz = config.fch1MHz;
+    c.foffMHz = config.foffMHz;
+    c.tsampS = config.tsampS;
     c.backpressure.store(config.backpressure ? 1 : 0);
     c.writerPid.store(static_cast<std::uint64_t>(getpid()));
     c.startUnix = UnixNow();

@@ -1,0 +1,45 @@
+# Observation configuration: how the station processes its data. Single source of truth for the spectral
+# resolution, integration, products and the narrowband drift search; read by lft3-pipeline (run planning) and
+# lft3-search (live and file searches). config/station.yaml names the one in use (`observation:`);
+# `lft3-pipeline run --observation NAME` picks another for one run, and single command-line options
+# (--fft-length, --integration, ...) override single values. Parsed by lft3.config.load_observation_config.
+name: default
+description: Interim survey at 1.19 kHz with 1 s spectra and a live drift search
+
+spectrometer:
+  # Fine channels per 152.6 kHz board channel (the fine FFT length). Give this OR resolution_hz (rounded to the
+  # nearest power of two of channels). 128 -> 1192.09 Hz. The fused spectrometer handles up to 1024 today; the
+  # design target is 2^17 (~1.16 Hz).
+  fine_channels_per_coarse: 128
+  integration_s: 1.0                # rounded to whole 6.71 ms blocks: 149 blocks = 0.99992 s
+  coarse_channels: [0, 6144]        # [start, count] of board channels, whole packets (multiples of 1024)
+  record_fine: true                 # fine FBH5 in <data_dir>/spectra/<board>/
+  coarse_product: true              # derived coarse FBH5 (spectra/<board>/quicklook/) + latest snapshot
+  spectra_per_file: 3600
+
+search:
+  # Narrowband drift search (hyperseti) on the fine spectra. Windows of window_spectra consecutive spectra,
+  # a new one every window_step_spectra spectra, aligned to absolute spectrum numbers (every stream and the
+  # file search use the same grid). Drift trials are steps of foff / window length: 1192 Hz / 64 s = 18.6 Hz/s
+  # here. 16-spectrum windows (74.5 Hz/s steps) were tried first: a drift then moves a signal by at most two or
+  # three channels per window and the reported rate is only good to +-75 Hz/s (synthetic tones, 2026-11-20).
+  live: true                        # lft3-pipeline run also starts the live search (spectra in GPU memory)
+  window_spectra: 64
+  window_step_spectra: 32           # 32 of 64: windows overlap by half; a hit is reported <= ~64 s after the fact
+  max_drift_hz_s: 200.0
+  snr_threshold: 20.0
+  dedoppler_plan: optimal           # every trial in +-max_drift (hyperseti "stepped" adds trials beyond it)
+  flatten_coarse_ripple: true       # divide by the 152.6 kHz channel response before searching
+  sk_flag: false                    # hyperseti spectral kurtosis flagging (flags 100 % of our data; see lft3-search)
+  blank_edge_channels: 8            # hyperseti blank_edges per gulp
+  gulp_channels: 131072             # channels per hyperseti gulp
+  max_missing_fraction: 0.01        # skip a window whose spectra miss more than this fraction of packets
+  ring_spectra: 64                  # spectra kept in GPU memory to absorb search lag (6.3 MB each per link)
+  hyperseti: {}                     # optional raw overrides of the hyperseti config (preprocess/dedoppler/...)
+
+dump:
+  enabled: true
+  max_window_s: 1.0                 # largest raw-voltage dump (pinned host memory: 7.5 GB per second per link)
+
+ring:
+  seconds: 2.0                      # voltage ring per link (7.5 GB per second at full band)

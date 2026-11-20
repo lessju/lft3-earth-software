@@ -28,6 +28,7 @@
 #include "capture/daqiri_config.hh"
 #include "capture/pcap.hh"
 #include "capture/scatter.hh"
+#include "capture/synth.hh"
 #include "common/layout.hh"
 #include "common/packet.hh"
 #include "common/ring.hh"
@@ -51,7 +52,11 @@ const char* kUsage = R"(lft3-capture --stream NAME [options]
   --packets-per-burst N --max-bursts N    (default 1024, 64)
   synthetic/file: --fast (no real-time pacing) --backpressure (wait for lossless readers)
                   --wait-readers N (start once N lossless readers are attached) --stop-after-blocks N
-  synthetic: --tone-channel N --tone-input N --tone-frequency F --drop-fraction F
+  synthetic: --tone-channel N --tone-input N --tone-frequency F (cycles/sample) --drop-fraction F
+             --noise periodic|random   periodic (default): 1024 spectra replayed from host memory (parity
+                                       tests); random: non-repeating noise + tone generated on the GPU
+             random only: --tone-drift HZ_PER_S --tone-amplitude A (default 1) --noise-sigma S (default 8)
+                          --seed N --tone-channel -1 (no tone)
   file: --file cap.pcap --loop
 )";
 
@@ -66,8 +71,12 @@ struct Options {
     std::uint64_t maxOpenBlocks = 4, maxBlockLag = 2, packetsPerBurst = 1024, maxBursts = 64;
     bool fast = false, backpressure = false, loop = false;
     std::uint64_t waitReaders = 0, stopAfterBlocks = 0;
-    std::uint64_t toneChannel = 4000, toneInput = 1;
+    std::int64_t toneChannel = 4000;
+    std::uint64_t toneInput = 1;
     double toneFrequency = 0.1015625, dropFraction = 0.0;
+    std::string noise = "periodic";
+    double toneDrift = 0.0, toneAmplitude = -1.0, noiseSigma = 8.0;
+    std::uint64_t seed = 1;
 };
 
 #define CUDA_OK(expr, what)                                                                 \
@@ -158,6 +167,8 @@ class Capture {
     // synthetic
     std::uint8_t* synth_ = nullptr;
     std::uint64_t synthSpectra_ = 1024, synthT_ = 0;
+    bool synthRandom_ = false;
+    SynthParams synthParams_;
     std::mt19937_64 dropRng_{12345};
     // file
     PcapPackets file_;
@@ -260,6 +271,34 @@ bool Capture::createSynthetic() {
     // results can be compared bit for bit.
     const std::uint64_t R = synthSpectra_;
     CUDA_OK(cudaMallocHost(&synth_, R * kPacketsPerSpectrum * kPayloadBytes), "cudaMallocHost");
+    if (o_.noise == "random") {
+        // Packets still flow (assembler, scatter, loss accounting); every sealed block is then overwritten on the
+        // GPU with non-repeating noise + the drifting tone (synth.cu). The packet payloads are zeros.
+        std::memset(synth_, 0, R * kPacketsPerSpectrum * kPayloadBytes);
+        synthRandom_ = true;
+        SynthParams& sp = synthParams_;
+        sp.channelCount = static_cast<std::uint32_t>(l_.channelCount);
+        sp.spectraPerBlock = static_cast<std::uint32_t>(l_.spectraPerBlock);
+        sp.channelStart = static_cast<std::uint32_t>(l_.channelStart);
+        for (int i = 0; i < 4; i++) {
+            sp.inputBeam[i] = l_.inputBeam[i];
+            sp.inputPol[i] = l_.inputPol[i];
+        }
+        sp.seed = o_.seed;
+        sp.noiseSigma = static_cast<float>(o_.noiseSigma);
+        sp.toneChannel = o_.toneChannel;
+        sp.toneInput = static_cast<std::uint32_t>(o_.toneInput);
+        sp.toneAmplitude = o_.toneAmplitude >= 0.0 ? o_.toneAmplitude : 1.0;
+        sp.toneFrequency = o_.toneFrequency;
+        sp.toneChirp = o_.toneDrift / (kSpectraPerSecond * kSpectraPerSecond);
+        LFT3_INFO("synthetic source (random noise, sigma %.2f, seed %lu): tone in channel %ld, input %lu, amplitude %.3f, "
+                  "%+.6f cycles/sample (%+.3f kHz) drifting %+.6g Hz/s, drop fraction %g",
+                  sp.noiseSigma, static_cast<unsigned long>(sp.seed), static_cast<long>(sp.toneChannel),
+                  static_cast<unsigned long>(sp.toneInput), sp.toneAmplitude, sp.toneFrequency,
+                  sp.toneFrequency * kCoarseChannelHz / 1e3, o_.toneDrift, o_.dropFraction);
+        return true;
+    }
+    const double amplitude = o_.toneAmplitude >= 0.0 ? o_.toneAmplitude : 24.0;
     const double f = std::round(o_.toneFrequency * static_cast<double>(R)) / static_cast<double>(R);
     std::normal_distribution<double> noise(0.0, 8.0);
     std::mt19937_64 rng(42);
@@ -269,17 +308,17 @@ bool Capture::createSynthetic() {
         for (std::uint64_t k = 0; k < kTotalChannels; k++) {
             for (std::uint64_t input = 0; input < kInputs; input++) {
                 double re = noise(rng), im = noise(rng);
-                if (k == o_.toneChannel && input == o_.toneInput) {
-                    re += 24.0 * std::cos(2.0 * M_PI * f * static_cast<double>(n));
-                    im += 24.0 * std::sin(2.0 * M_PI * f * static_cast<double>(n));
+                if (static_cast<std::int64_t>(k) == o_.toneChannel && input == o_.toneInput) {
+                    re += amplitude * std::cos(2.0 * M_PI * f * static_cast<double>(n));
+                    im += amplitude * std::sin(2.0 * M_PI * f * static_cast<double>(n));
                 }
                 *p++ = clip(re);
                 *p++ = clip(im);
             }
         }
     }
-    LFT3_INFO("synthetic source: tone in channel %lu, input %lu, %+.6f cycles/sample (%+.3f kHz), drop fraction %g",
-              static_cast<unsigned long>(o_.toneChannel), static_cast<unsigned long>(o_.toneInput), f,
+    LFT3_INFO("synthetic source: tone in channel %ld, input %lu, %+.6f cycles/sample (%+.3f kHz), drop fraction %g",
+              static_cast<long>(o_.toneChannel), static_cast<unsigned long>(o_.toneInput), f,
               f * kCoarseChannelHz / 1e3, o_.dropFraction);
     return true;
 }
@@ -485,6 +524,9 @@ bool Capture::handleSealed(std::vector<SealedBlock>& sealed) {
         if (!s.emit) {
             ring_.release(s.buffer);
             continue;
+        }
+        if (synthRandom_) {
+            CUDA_OK(LaunchSynthesizeBlock(ring_.blockPtr(s.buffer), s.index, synthParams_, stream_), "synthesis kernel launch");
         }
         if (!s.missingSlots.empty()) {
             // Zero-fill the missing packets' regions: the scatter kernel with null sources.
@@ -739,10 +781,20 @@ bool ParseOptions(const Args& a, Options& o) {
     o.loop = a.flag("loop");
     o.waitReaders = static_cast<std::uint64_t>(a.i64("wait-readers", 0));
     o.stopAfterBlocks = static_cast<std::uint64_t>(a.i64("stop-after-blocks", 0));
-    o.toneChannel = static_cast<std::uint64_t>(a.i64("tone-channel", 4000));
+    o.toneChannel = a.i64("tone-channel", 4000);
     o.toneInput = static_cast<std::uint64_t>(a.i64("tone-input", 1));
     o.toneFrequency = a.f64("tone-frequency", 0.1015625);
     o.dropFraction = a.f64("drop-fraction", 0.0);
+    o.noise = a.str("noise", "periodic");
+    o.toneDrift = a.f64("tone-drift", 0.0);
+    o.toneAmplitude = a.f64("tone-amplitude", -1.0);
+    o.noiseSigma = a.f64("noise-sigma", 8.0);
+    o.seed = static_cast<std::uint64_t>(a.i64("seed", 1));
+    if (o.noise != "periodic" && o.noise != "random") return false;
+    if (o.noise == "periodic" && (o.toneDrift != 0.0 || o.toneChannel < 0)) {
+        LFT3_ERROR("--tone-drift and --tone-channel -1 need --noise random (the periodic generator repeats every block)");
+        return false;
+    }
     const Layout& l = o.layout;
     if (o.stream.empty() || (o.source != "network" && o.source != "synthetic" && o.source != "file")) return false;
     if (o.source == "network" && o.interface.empty()) return false;

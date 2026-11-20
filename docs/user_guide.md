@@ -63,6 +63,39 @@ Each link needs its own three cores. The Cortex-X925 cores are 5–9 and 15–19
 (default `network.channel_port`) and `source_ip` (default `network.source_ip`). The input → beam/pol mapping is
 `adc.inputs`, the exact NCO `adc.nco_mhz`.
 
+### Observation config: how the data is processed
+
+`config/observations/<name>.yaml` is the single place for processing choices; `config/station.yaml` names the
+one in use (`observation: default`). `lft3-pipeline run` and `lft3-search` both read it.
+
+```yaml
+spectrometer:
+  fine_channels_per_coarse: 128     # or resolution_hz: 1192 (nearest power of two); <= 1024 for now
+  integration_s: 1.0
+  coarse_channels: [0, 6144]
+  record_fine: true
+  coarse_product: true
+  spectra_per_file: 3600
+search:
+  live: true                        # search the spectra in GPU memory during the run
+  window_spectra: 64                # spectra per search -> drift step foff / 64 s = 18.6 Hz/s
+  window_step_spectra: 32           # a search every 32 spectra (windows overlap by half)
+  max_drift_hz_s: 200.0
+  snr_threshold: 20.0
+  dedoppler_plan: optimal
+  flatten_coarse_ripple: true
+  max_missing_fraction: 0.01        # skip windows with more packet loss than this
+  ring_spectra: 64                  # GPU spectra kept for the search (6.3 MB each)
+  hyperseti: {}                     # raw hyperseti overrides
+dump: {enabled: true, max_window_s: 1.0}
+ring: {seconds: 2.0}
+```
+
+Another observation: copy the file, then `lft3-pipeline run --observation NAME`. Options such as
+`--fft-length`, `--integration`, `--no-search` override single values for one run. The run directory gets the
+effective `observation.yaml`. Invalid combinations are refused at start (for example a drift range that never
+crosses one channel within a window, or an FFT length the spectrometer cannot do yet).
+
 ## 4. Running
 
 Start the board first (`lft3-board start`; see `docs/operations.md`), then:
@@ -181,27 +214,36 @@ See `docs/runtime.md` §5 for a complete reader loop (C++ or Python).
 
 ## 9. Searching the spectra (hyperseti)
 
-The narrowband drift search runs in its own Python environment (CuPy for CUDA 13 needs Python ≥ 3.10):
+The narrowband drift search uses hyperseti in its own Python environment (CuPy for CUDA 13 needs Python ≥ 3.10):
+`scripts/setup_search_env.sh` once (→ `/opt/lft3arth/search_venv`; `make link-tools` puts `lft3-search` on the
+venv's PATH). Settings come from the observation config (`search:`).
+
+**Live (default during a run).** With `search.live: true`, `lft3-pipeline run` also starts a live search per
+link. It reads the 1 s spectra straight from GPU memory (the spectrometer's spectra ring), so it adds almost no
+memory traffic, and searches the last 64 spectra every 32 s:
+
+* Hits: `<data_dir>/hits/<board>/live_<stream>_<UTC>.csv`: window, start time, beam, frequency, drift (Hz/s),
+  S/N, channel, `label`, obs id, stream. Written within a second of a window's last spectrum.
+* Per window: `live_<stream>_<UTC>.windows.jsonl` (searched or skipped and why, hits, search time, latency).
+* `lft3-pipeline status` shows it as `search(lag, over, windows)` on the `<stream>-spectra` ring; its log is
+  `<run_dir>/<stream>-search.log`. `--no-search` turns it off for one run.
+* Windows with more than 1 % missing packets are skipped. A gap in the spectra restarts the window.
+* Drift resolution = channel width / window length (18.6 Hz/s for 1.19 kHz and 64 s), and reported drifts are
+  good to about one step. S/N ≥ 20 by default.
+
+**Files.** `lft3-search` searches finished FBH5 files in the same windows (identical hits for the same spectra):
 
 ```bash
-scripts/setup_search_env.sh                          # once: /opt/lft3arth/search_venv (hyperseti pinned)
-/opt/lft3arth/search_venv/bin/lft3-search FILE.h5    # one file
-/opt/lft3arth/search_venv/bin/lft3-search --watch    # every finished file in <data_dir>/spectra/<board>/, keeps going
-/opt/lft3arth/search_venv/bin/lft3-search --watch --once   # one pass
+lft3-search FILE.h5                   # one file (one beam): hits in <dir>/hits/<file>.csv
+lft3-search --watch [--once]          # every finished file in <data_dir>/spectra/<board>/
+lft3-search FILE.h5 --whole-file      # the whole file as one window (old behaviour, more sensitive to slow drifts)
+lft3-search --live --stream rfsoc0-link0   # what lft3-pipeline starts
 ```
 
-* Hits go to `<data_dir>/hits/<board>/<file>.csv`: frequency, drift rate, S/N, channel, a `label`, obs id and
-  stream. `hits/searched.txt` records which files are done.
-* Only finished files are searched: a newer file of the same beam exists, or the file has not changed for 2 min.
-  A file that is still being written is never opened.
-* Defaults suit 1.19 kHz / 1 s spectra: no spectral-kurtosis flagging, drifts up to 200 Hz/s (`--max-drift`),
-  S/N ≥ 20 (`--snr`).
-* Hits within two fine channels of a board spur (every 125 MHz) or in Wi-Fi channel 1 are labelled
-  `rfi:...`, not removed.
-* Speed: about 2.5 s for 70 s of one beam, i.e. far faster than real time.
-* **Do not run large searches on the Spark during a live capture.** Searching a 1.2 GB file at full speed loaded
-  the shared memory bus enough that the NIC discarded 277 packets (`rx_discards_phy`). Search after the run, on
-  another machine, or with `--gulp` reduced. See `docs/runtime.md` §6.
+* Hits within two fine channels of a board spur (every 125 MHz) or in Wi-Fi channel 1 are labelled `rfi:...`,
+  not removed.
+* A file search reads ~1 GB files and loads the memory bus: don't run `--watch` or `--whole-file` on the capture
+  Spark during a live capture (it once cost 277 packets at the NIC). The live search does not have this problem.
 
 ## 10. Troubleshooting
 

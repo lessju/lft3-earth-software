@@ -10,6 +10,10 @@ For every link of a board (``receiver.links`` in the board configuration) a run 
 * ``quicklook``     optional (``quicklook_s``): a second reader in coarse mode for a faster cadence than the fine
                     integration -> <run_dir>/latest_fast/ (costs one more full read of every block)
 * ``dump``          lft3-dump: GUPPI RAW windows on trigger -> <data_dir>/dumps/<board>/
+* ``search``        live narrowband drift search (``search_live``): hyperseti on the fine spectra the
+                    spectrometer publishes into the GPU ring ``<board>-<link>-spectra`` -> hits CSV in
+                    <data_dir>/hits/<board>/. Runs on the host in the search venv (CuPy + hyperseti), not in a
+                    container; lft3-pipeline starts and stops it with the run.
 
 Each process runs in its own container (image ``lft3-runtime``) so it can be restarted on its own and a crash
 in a reader never touches the capture. Capture of a network source gets NIC access (DAQIRI raw ibverbs); readers
@@ -25,13 +29,14 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lft3.config import BoardConfig, LinkConfig
+from lft3.config import BoardConfig, LinkConfig, ObservationConfig
 from lft3.packets import CH_PER_PKT, NCHAN, SPECTRUM_RATE
 
 SOURCES = ("network", "synthetic", "file")
 IMAGE = os.environ.get("LFT3_IMAGE", "lft3-runtime")
 REPO = Path(__file__).resolve().parents[3]
 BUILD = REPO / "pipeline" / "build"
+SEARCH_PYTHON = os.environ.get("LFT3_SEARCH_PYTHON", "/opt/lft3arth/search_venv/bin/python")
 
 
 @dataclass
@@ -56,7 +61,33 @@ class RunOptions:
     obs_id: str = ""
     tone_channel: int = 4000              # synthetic source
     tone_input: int = 1
+    tone_frequency: float | None = None   # cycles/sample within the board channel (None: capture default)
+    tone_drift_hz_s: float = 0.0          # linear drift of the tone (needs random_noise)
+    tone_amplitude: float = 0.0           # 0: capture default
+    random_noise: bool = False            # synthetic: non-repeating noise generated on the GPU (searches)
     drop_fraction: float = 0.0
+    search_live: bool = False             # live drift search on the spectra ring (host process, search venv)
+    spectra_ring: int = 0                 # spectra slots in GPU memory for the search (0 = no spectra ring)
+    observation_file: str = ""            # effective observation config handed to the search
+    search_save_every: int = 0            # > 0: the search saves every K-th window to <run_dir>/windows (checks)
+
+    @classmethod
+    def from_observation(cls, obs: ObservationConfig, **overrides) -> RunOptions:
+        """Run options from the observation config; keyword arguments override single values."""
+        sp = obs.spectrometer
+        opts = cls(fft_length=sp.fine_channels_per_coarse, integration_s=sp.integration_s,
+                   channel_start=sp.channel_start, channel_count=sp.channel_count, record=sp.record_fine,
+                   spectra_per_file=sp.spectra_per_file, coarse=sp.coarse_product, dump=obs.dump_enabled,
+                   dump_max_s=obs.dump_max_window_s, ring_seconds=obs.ring_seconds, search_live=obs.search.live,
+                   spectra_ring=obs.search.ring_spectra if obs.search.live else 0,
+                   observation_file=obs.path or "")
+        for k, v in overrides.items():
+            if not hasattr(opts, k):
+                raise ValueError(f"unknown run option {k}")
+            setattr(opts, k, v)
+        if "spectra_ring" not in overrides:
+            opts.spectra_ring = obs.search.ring_spectra if opts.search_live else 0
+        return opts
 
     def validate(self) -> None:
         if self.source not in SOURCES:
@@ -74,6 +105,10 @@ class RunOptions:
             raise ValueError("ring_seconds must be >= 0.2 and longer than the dump window + 0.2 s")
         if self.lossless and self.source == "network":
             raise ValueError("lossless (backpressure) is only possible with synthetic or file sources")
+        if self.search_live and not 16 <= self.spectra_ring <= 4096:
+            raise ValueError("the live search needs a spectra ring of 16..4096 spectra")
+        if self.tone_drift_hz_s and not self.random_noise:
+            raise ValueError("a drifting tone needs random_noise (the periodic generator repeats every block)")
 
     @property
     def tsamp(self) -> float:
@@ -83,7 +118,7 @@ class RunOptions:
 
 @dataclass
 class Process:
-    role: str                    # capture | spectrometer | quicklook | dump
+    role: str                    # capture | spectrometer | quicklook | dump | search
     stream: str
     container: str
     argv: list[str]              # inside the container
@@ -91,6 +126,13 @@ class Process:
     cpuset: str = ""
     mounts: list[str] = field(default_factory=list)
     log: str = ""
+    host: bool = False           # run on the host (not in a container): the search venv
+
+    def argv_to_run(self) -> list[str]:
+        """The command lft3-pipeline executes: docker run ..., or the host command (pinned with taskset)."""
+        if self.host:
+            return (["taskset", "-c", self.cpuset] if self.cpuset else []) + self.argv
+        return self.docker_argv()
 
     def docker_argv(self, uid: int | None = None, gid: int | None = None) -> list[str]:
         uid = os.getuid() if uid is None else uid
@@ -130,8 +172,9 @@ class RunPlan:
 
 def config_hash(board: BoardConfig, opts: RunOptions) -> str:
     h = hashlib.sha1()
-    if board.path and Path(board.path).exists():
-        h.update(Path(board.path).read_bytes())
+    for path in (board.path, opts.observation_file):
+        if path and Path(path).exists():
+            h.update(Path(path).read_bytes())
     h.update(repr(sorted(vars(opts).items())).encode())
     return h.hexdigest()[:16]
 
@@ -174,6 +217,12 @@ def plan_run(board: BoardConfig, opts: RunOptions, data_dir: str, run_dir: str, 
             if opts.source == "synthetic":
                 cap += ["--tone-channel", str(opts.tone_channel), "--tone-input", str(opts.tone_input),
                         "--drop-fraction", f"{opts.drop_fraction:g}"]
+                if opts.tone_frequency is not None:
+                    cap += ["--tone-frequency", f"{opts.tone_frequency:.12g}"]
+                if opts.tone_amplitude:
+                    cap += ["--tone-amplitude", f"{opts.tone_amplitude:g}"]
+                if opts.random_noise:
+                    cap += ["--noise", "random", "--tone-drift", f"{opts.tone_drift_hz_s:.12g}"]
             else:
                 cap += ["--file", str(Path(opts.file).resolve())]
                 if opts.loop:
@@ -193,6 +242,8 @@ def plan_run(board: BoardConfig, opts: RunOptions, data_dir: str, run_dir: str, 
             spec += ["--latest", latest_dir] + (["--coarse-dir", quick_dir] if opts.record else [])
         if opts.lossless:
             spec.append("--lossless")
+        if opts.spectra_ring:
+            spec += ["--spectra-ring", str(opts.spectra_ring)]
         procs.append(Process("spectrometer", stream, f"lft3-{stream}-spectrometer", spec, cpuset=lk.reader_cpus,
                              mounts=mounts, log=str(Path(run_dir) / f"{stream}-spectrometer.log")))
         if opts.quicklook_s > 0:
@@ -209,4 +260,35 @@ def plan_run(board: BoardConfig, opts: RunOptions, data_dir: str, run_dir: str, 
                     "--source-name", board.name, "--obs-id", obs_id]
             procs.append(Process("dump", stream, f"lft3-{stream}-dump", dump, cpuset=lk.reader_cpus,
                                  mounts=mounts, log=str(Path(run_dir) / f"{stream}-dump.log")))
+        if opts.search_live:
+            obs_file = str(Path(run_dir) / "observation.yaml")   # written by lft3-pipeline (effective config)
+            search = [SEARCH_PYTHON, "-m", "lft3.search.live", "--stream", stream, "--observation", obs_file,
+                      "--out", str(Path(data_dir) / "hits" / board.name), "--prefix", prefix,
+                      "--beam-offset", str(lk.beam_offset), "--pid-file", search_pid_file(stream)]
+            if opts.lossless:
+                search.append("--lossless")
+            if opts.search_save_every:
+                search += ["--save-windows", str(Path(run_dir) / "windows"),
+                           "--save-every", str(opts.search_save_every)]
+            procs.append(Process("search", stream, f"lft3-{stream}-search", search, cpuset=search_cpus(lk.reader_cpus),
+                                 log=str(Path(run_dir) / f"{stream}-search.log"), host=True))
     return RunPlan(board.name, run_dir, obs_id, chash, procs)
+
+
+def search_pid_file(stream: str) -> str:
+    """Where a host-side live search records its pid (lft3-pipeline stop finds it there)."""
+    return f"/dev/shm/lft3-{stream}-search.pid"
+
+
+def search_cpus(reader_cpus: str) -> str:
+    """The live search runs on the link's reader cores minus the Cortex-X925 ones (5-9, 15-19): keep the busy
+    cores for capture and the spectrometer; Python + hyperseti mostly wait for the GPU."""
+    if not reader_cpus:
+        return ""
+    keep = []
+    for part in reader_cpus.split(","):
+        lo, _, hi = part.partition("-")
+        for c in range(int(lo), int(hi or lo) + 1):
+            if not (5 <= c <= 9 or 15 <= c <= 19):
+                keep.append(c)
+    return ",".join(str(c) for c in keep) or reader_cpus

@@ -2,11 +2,14 @@
 
     cfg = load_board_config("rfsoc0")                 # config/boards/rfsoc0.yaml
     cfg = load_board_config("/path/to/board.yaml")
+    obs = load_observation_config("default")          # config/observations/default.yaml
+    st = load_station_config(); obs = st.observation_config()
 
 The config directory is $LFT3_CONFIG_DIR, or the repository's config/ when running from a checkout.
 """
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -214,7 +217,11 @@ class StationConfig:
     name: str
     boards: list[BoardConfig]
     data_dir: str
+    observation: str = "default"      # config/observations/<name>.yaml
     path: str | None = field(default=None, compare=False)
+
+    def observation_config(self, name_or_path: str | None = None) -> ObservationConfig:
+        return load_observation_config(name_or_path or self.observation)
 
     def board(self, name: str) -> BoardConfig:
         for b in self.boards:
@@ -238,6 +245,7 @@ def load_station_config(name_or_path: str = "station", boards: list[str] | None 
         name=str(_get(data, "name")),
         boards=[load_board_config(n) for n in names],
         data_dir=str(_get(data, "data_dir", "/opt/lft3arth/data", required=False)),
+        observation=str(_get(data, "observation", "default", required=False)),
         path=str(p),
     )
     _validate_station(station)
@@ -251,3 +259,219 @@ def _validate_station(st: StationConfig) -> None:
         values = [getattr(b, attr) for b in st.boards]
         if len(set(values)) != len(values):
             raise ConfigError(f"boards share a {what}: {values}")
+
+
+# ------------------------------------------------------------------------------------------- observation
+
+COARSE_CHANNEL_HZ = 152587.890625      # board channel width (1250 MSPS / 8192)
+TOTAL_COARSE_CHANNELS = 6144
+CHANNELS_PER_PACKET = 1024
+MAX_FUSED_FFT = 1024                   # the fused spectrometer's limit (one block of 1024 spectra)
+
+
+@dataclass
+class SpectrometerSettings:
+    fine_channels_per_coarse: int = 128
+    integration_s: float = 1.0
+    channel_start: int = 0
+    channel_count: int = TOTAL_COARSE_CHANNELS
+    record_fine: bool = True
+    coarse_product: bool = True
+    spectra_per_file: int = 3600
+
+    @property
+    def resolution_hz(self) -> float:
+        return COARSE_CHANNEL_HZ / self.fine_channels_per_coarse
+
+    @property
+    def fine_channels(self) -> int:
+        """Fine channels per beam."""
+        return self.channel_count * self.fine_channels_per_coarse
+
+
+@dataclass
+class SearchSettings:
+    live: bool = True
+    window_spectra: int = 64
+    window_step_spectra: int = 32
+    max_drift_hz_s: float = 200.0
+    snr_threshold: float = 20.0
+    dedoppler_plan: str = "optimal"
+    flatten_coarse_ripple: bool = True
+    sk_flag: bool = False
+    blank_edge_channels: int = 8
+    gulp_channels: int = 2 ** 17
+    max_missing_fraction: float = 0.01
+    ring_spectra: int = 64
+    hyperseti: dict = field(default_factory=dict)
+
+    def hyperseti_config(self) -> dict:
+        """The hyperseti pipeline config (GulpPipeline) for these settings, with the raw overrides applied."""
+        cfg = {
+            "preprocess": {"sk_flag": self.sk_flag, "normalize": True,
+                           "blank_edges": {"n_chan": self.blank_edge_channels},
+                           "blank_extrema": {"threshold": 10000}},
+            "dedoppler": {"kernel": "dedoppler", "max_dd": self.max_drift_hz_s, "apply_smearing_corr": True,
+                          "plan": self.dedoppler_plan},
+            "hitsearch": {"threshold": self.snr_threshold, "merge_boxcar_trials": True},
+            "pipeline": {},
+        }
+        if not self.blank_edge_channels:
+            cfg["preprocess"].pop("blank_edges")
+        for section, values in self.hyperseti.items():
+            if isinstance(values, dict):
+                cfg.setdefault(section, {}).update(values)
+            else:
+                cfg[section] = values
+        return cfg
+
+
+@dataclass
+class ObservationConfig:
+    name: str
+    description: str = ""
+    spectrometer: SpectrometerSettings = field(default_factory=SpectrometerSettings)
+    search: SearchSettings = field(default_factory=SearchSettings)
+    dump_enabled: bool = True
+    dump_max_window_s: float = 1.0
+    ring_seconds: float = 2.0
+    path: str | None = field(default=None, compare=False)
+
+    @property
+    def tsamp(self) -> float:
+        """Spectrum length after rounding to whole 1024-spectrum blocks."""
+        blocks = max(1, round(self.spectrometer.integration_s * COARSE_CHANNEL_HZ / 1024))
+        return blocks * 1024 / COARSE_CHANNEL_HZ
+
+    def summary(self) -> str:
+        sp, se = self.spectrometer, self.search
+        text = (f"{self.name}: {sp.fine_channels_per_coarse} fine channels per board channel "
+                f"({sp.resolution_hz:.2f} Hz), {self.tsamp:.4f} s spectra, channels {sp.channel_start}+"
+                f"{sp.channel_count}")
+        if se.live:
+            text += (f"; live search {se.window_spectra} spectra every {se.window_step_spectra}, "
+                     f"|drift| <= {se.max_drift_hz_s:g} Hz/s (step {self.drift_resolution_hz_s:.3g}), "
+                     f"S/N >= {se.snr_threshold:g}")
+        return text
+
+    @property
+    def drift_resolution_hz_s(self) -> float:
+        return self.spectrometer.resolution_hz / (self.search.window_spectra * self.tsamp)
+
+
+def _fine_channels(d: dict) -> int:
+    has_n, has_res = "fine_channels_per_coarse" in d, "resolution_hz" in d
+    if has_n and has_res:
+        raise ConfigError("spectrometer: give fine_channels_per_coarse or resolution_hz, not both")
+    if has_res:
+        res = float(d["resolution_hz"])
+        if res <= 0:
+            raise ConfigError("spectrometer.resolution_hz must be positive")
+        return 2 ** max(1, round(math.log2(COARSE_CHANNEL_HZ / res)))
+    return int(d.get("fine_channels_per_coarse", 128))
+
+
+def parse_observation_config(data: dict, path: str | None = None) -> ObservationConfig:
+    data = data or {}
+    sp_d = data.get("spectrometer") or {}
+    se_d = data.get("search") or {}
+    dump_d = data.get("dump") or {}
+    ring_d = data.get("ring") or {}
+    known = {"spectrometer": {"fine_channels_per_coarse", "resolution_hz", "integration_s", "coarse_channels",
+                              "record_fine", "coarse_product", "spectra_per_file"},
+             "search": set(SearchSettings.__dataclass_fields__), "dump": {"enabled", "max_window_s"},
+             "ring": {"seconds"}}
+    for section, d in (("spectrometer", sp_d), ("search", se_d), ("dump", dump_d), ("ring", ring_d)):
+        unknown = set(d) - known[section]
+        if unknown:
+            raise ConfigError(f"{section}: unknown keys {sorted(unknown)}")
+    chans = sp_d.get("coarse_channels", [0, TOTAL_COARSE_CHANNELS])
+    if not isinstance(chans, (list, tuple)) or len(chans) != 2:
+        raise ConfigError("spectrometer.coarse_channels must be [start, count]")
+    sp = SpectrometerSettings(
+        fine_channels_per_coarse=_fine_channels(sp_d),
+        integration_s=float(sp_d.get("integration_s", 1.0)),
+        channel_start=int(chans[0]), channel_count=int(chans[1]),
+        record_fine=bool(sp_d.get("record_fine", True)),
+        coarse_product=bool(sp_d.get("coarse_product", True)),
+        spectra_per_file=int(sp_d.get("spectra_per_file", 3600)))
+    defaults = SearchSettings()
+    se = SearchSettings(**{k: type(getattr(defaults, k))(se_d[k]) if k != "hyperseti" else dict(se_d[k] or {})
+                           for k in se_d})
+    obs = ObservationConfig(
+        name=str(data.get("name", Path(path).stem if path else "observation")),
+        description=str(data.get("description", "")),
+        spectrometer=sp, search=se,
+        dump_enabled=bool(dump_d.get("enabled", True)),
+        dump_max_window_s=float(dump_d.get("max_window_s", 1.0)),
+        ring_seconds=float(ring_d.get("seconds", 2.0)),
+        path=path)
+    validate_observation(obs)
+    return obs
+
+
+def validate_observation(o: ObservationConfig) -> None:
+    sp, se = o.spectrometer, o.search
+    n = sp.fine_channels_per_coarse
+    if n < 2 or n & (n - 1):
+        raise ConfigError("spectrometer: fine channels per board channel must be a power of two >= 2")
+    if n > MAX_FUSED_FFT:
+        raise ConfigError(f"spectrometer: {n} fine channels per board channel ({sp.resolution_hz:.3g} Hz) needs the "
+                          f"Hz-resolution path, which is not built yet (the fused spectrometer stops at "
+                          f"{MAX_FUSED_FFT})")
+    if sp.channel_start % CHANNELS_PER_PACKET or sp.channel_count % CHANNELS_PER_PACKET or sp.channel_count <= 0 \
+            or sp.channel_start < 0 or sp.channel_start + sp.channel_count > TOTAL_COARSE_CHANNELS:
+        raise ConfigError("spectrometer.coarse_channels: whole packets (multiples of 1024) within 0..6144")
+    if sp.integration_s <= 0 or sp.spectra_per_file < 0:
+        raise ConfigError("spectrometer: integration_s must be positive, spectra_per_file >= 0")
+    if se.window_spectra < 4:
+        raise ConfigError("search.window_spectra must be >= 4")
+    if not 1 <= se.window_step_spectra <= se.window_spectra:
+        raise ConfigError("search.window_step_spectra must be in 1..window_spectra")
+    if se.max_drift_hz_s <= 0 or se.snr_threshold <= 0:
+        raise ConfigError("search: max_drift_hz_s and snr_threshold must be positive")
+    if se.max_drift_hz_s * se.window_spectra * o.tsamp < sp.resolution_hz:
+        raise ConfigError(f"search: |drift| <= {se.max_drift_hz_s:g} Hz/s never crosses a {sp.resolution_hz:.4g} Hz "
+                          f"channel in {se.window_spectra} spectra (hyperseti: 'No steps!'); raise max_drift_hz_s or "
+                          "window_spectra")
+    if se.dedoppler_plan not in ("optimal", "stepped"):
+        raise ConfigError("search.dedoppler_plan must be optimal or stepped")
+    if se.gulp_channels < 1024 or se.gulp_channels & (se.gulp_channels - 1):
+        raise ConfigError("search.gulp_channels must be a power of two >= 1024")
+    # The live reader keeps window_spectra in its own buffer; the ring only needs to cover its lag. The writer
+    # keeps 8 slots of margin (kReadMargin) and needs >= 16 slots.
+    if not 16 <= se.ring_spectra <= 4096:
+        raise ConfigError("search.ring_spectra must be in 16..4096")
+    if not 0 <= se.max_missing_fraction <= 1:
+        raise ConfigError("search.max_missing_fraction must be in 0..1")
+    if o.ring_seconds < 0.2 or (o.dump_enabled and o.dump_max_window_s + 0.2 > o.ring_seconds):
+        raise ConfigError("ring.seconds must be >= 0.2 and longer than dump.max_window_s + 0.2 s")
+
+
+def load_observation_config(name_or_path: str = "default") -> ObservationConfig:
+    p = Path(name_or_path)
+    if not p.suffix:
+        p = config_dir() / "observations" / f"{name_or_path}.yaml"
+    if not p.exists():
+        raise ConfigError(f"observation config not found: {p}")
+    with open(p) as fh:
+        data = yaml.safe_load(fh)
+    return parse_observation_config(data, str(p))
+
+
+def list_observations() -> list[str]:
+    return sorted(p.stem for p in (config_dir() / "observations").glob("*.yaml"))
+
+
+def observation_to_dict(o: ObservationConfig) -> dict:
+    """The YAML form of an observation config (load_observation_config reads it back unchanged)."""
+    sp, se = o.spectrometer, o.search
+    return {
+        "name": o.name, "description": o.description,
+        "spectrometer": {"fine_channels_per_coarse": sp.fine_channels_per_coarse, "integration_s": sp.integration_s,
+                         "coarse_channels": [sp.channel_start, sp.channel_count], "record_fine": sp.record_fine,
+                         "coarse_product": sp.coarse_product, "spectra_per_file": sp.spectra_per_file},
+        "search": {k: getattr(se, k) for k in SearchSettings.__dataclass_fields__},
+        "dump": {"enabled": o.dump_enabled, "max_window_s": o.dump_max_window_s},
+        "ring": {"seconds": o.ring_seconds},
+    }

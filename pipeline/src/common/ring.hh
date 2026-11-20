@@ -2,7 +2,10 @@
 #define LFT3_COMMON_RING_HH
 
 // The voltage ring shared by lft3-capture (single writer) and any number of reader processes
-// (docs/runtime.md §3).
+// (docs/runtime.md §3). The same machinery carries the spectra ring "<stream>-spectra" that lft3-spectrometer
+// --spectra-ring writes (kind = Spectra: one integrated fine spectrum per slot, float32 [beam][channel]) for
+// the live search; there channelCount is the coarse channel count, spectraPerBlock the spectra per
+// integration, blockIndex the integration (window) number and t0 its first spectrum.
 //
 //   control plane  POSIX shm "/lft3-<stream>" (RingControl below): layout, publication head, per-slot
 //                  metadata, per-reader cursors and statistics, capture statistics. CPU atomics + futex.
@@ -35,7 +38,7 @@
 namespace Lft3 {
 
 constexpr std::uint64_t kRingMagic = 0x4C46543352494E47ULL;   // "LFT3RING"
-constexpr std::uint32_t kRingVersion = 1;
+constexpr std::uint32_t kRingVersion = 2;   // 2: kind + spectra fields (were reserved in 1)
 constexpr std::uint64_t kInvalidSeq = ~0ULL;
 constexpr std::uint32_t kMaxReaders = 16;
 constexpr std::uint32_t kMaxSlots = 4096;
@@ -44,6 +47,10 @@ constexpr std::uint32_t kMaxSlots = 4096;
 constexpr std::uint64_t kReadMargin = 8;
 
 enum class RingState : std::uint32_t { Starting = 0, Running = 1, Stopped = 2 };
+enum class RingKind : std::uint32_t { Voltages = 0, Spectra = 1 };
+
+constexpr std::uint32_t kSlotFlagPartial = 1;   // zero-filled packets in this block / spectrum
+constexpr std::uint32_t kSlotFlagNewRun = 2;    // spectra ring: discontinuity before this spectrum
 
 // Metadata of one published block (128 bytes).
 struct alignas(64) RingSlot {
@@ -127,7 +134,12 @@ struct RingControl {
     std::atomic<std::uint64_t> writerHeartbeatNs;
     double startUnix;
     RingCaptureStats stats;
-    std::uint8_t reserved0[48];
+    std::uint32_t kind;                 // RingKind
+    std::uint32_t fineChannelsPerCoarse;   // spectra ring: fine channels per coarse channel in a slot
+    double fch1MHz;                     // spectra ring: centre of channel 0 (0 if the NCO was unknown)
+    double foffMHz;                     // spectra ring: channel width
+    double tsampS;                      // spectra ring: integration time of one slot
+    std::uint8_t reserved0[16];
     RingReaderEntry readers[kMaxReaders];
     std::atomic<std::uint64_t> seqToSlot[kMaxSlots];
     RingSlot slot[kMaxSlots];
@@ -159,6 +171,10 @@ struct RingConfig {
     std::string obsId;
     std::string configHash;
     bool backpressure = false;
+    RingKind kind = RingKind::Voltages;
+    std::uint64_t blockBytes = 0;       // 0: layout.bytesPerBlock() (voltages)
+    std::uint32_t fineChannelsPerCoarse = 0;
+    double fch1MHz = 0.0, foffMHz = 0.0, tsampS = 0.0;
 };
 
 class RingWriter {

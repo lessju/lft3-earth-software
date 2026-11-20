@@ -5,3 +5,4 @@ boards:
   - rfsoc0
   # - rfsoc1 ... rfsoc5 (6 boards in the full system; each needs a unique board_id and destination)
 data_dir: /opt/lft3arth/data         # captures/, spectra/, runs/ live under here
+observation: default                 # config/observations/<name>.yaml: resolution, integration, search
