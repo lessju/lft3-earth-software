@@ -304,13 +304,15 @@ def content():
     B("One board streams to one NVIDIA DGX Spark, the development host. The real-time runtime runs live at line "
       "rate without packet loss.",
       "The receiver never waits for anything downstream. It writes voltages into a ring in GPU memory, and "
-      "independent readers process them at their own pace: today the 1.2 kHz spectrometer and the raw-voltage dump. "
+      "independent readers process them at their own pace: the 1.2 kHz spectrometer and the raw-voltage dump. "
       "A slow or crashed reader cannot cause data loss.",
       "Spectra are written in the Breakthrough Listen formats and open with the community tools. A browser viewer "
       "shows hour-long files interactively.",
       "A <b>live narrowband drift search</b> (hyperseti) reads the spectra straight from GPU memory while the run "
-      "goes on, and reports hits within a second of each 64-second window. A one-hour soak with the search running "
-      "lost no packets. Its results are identical to searching the same spectra from files.",
+      "goes on, and reports hits within a second of each 64-second window. Stationary hits, which are local "
+      "interference, are dropped. A one-hour soak with the search running lost no packets, and its results are "
+      "identical to searching the same spectra from files. Hits can trigger raw-voltage dumps; this is off until "
+      "the trigger rules are agreed.",
       "One observation configuration file sets the resolution, integration time, products and search for runs and "
       "searches alike.",
       "The frequency axis and its sign are confirmed by the board's own clock spurs and by an injected test tone.")
@@ -327,16 +329,18 @@ def content():
       "under 10 % load, so they can be bought before the final resolution is chosen.")
     H3("Open decisions and risks")
     B("<b>Science choices that set the size</b>: the band processed at Hz resolution, the search window, the length "
-      "of the raw-voltage buffer for transients, and the trigger rate. Halving the band, or finding a four times "
+      "of the raw-voltage buffer for transients and search triggers, and the trigger rate. Halving the band, or finding a four times "
       "faster search kernel, halves the number of GPUs. The buffer length sets the RAM, and the trigger rate sets "
       "the storage.",
       "<b>Not yet measured</b>: the wideband transient search, the fused Hz-resolution channeliser, and GPUDirect "
       "transfers from the network card on the chosen GPU. A week on one rented RTX PRO 6000 server, after porting "
       "the runtime from the Spark to an x86 server, settles them before purchase.",
+      "<b>Trigger rules</b>: which search hits deserve a raw-voltage dump. Live, the strongest remaining hits are "
+      "stationary signals measured one drift step off zero, so a minimum drift is needed.",
       "<b>Still to verify on the board</b>: which inputs pair into a dual-polarisation beam, and an exact time "
       "reference through a firmware sync aligned to the PPS.")
 
-    H1("Conventions")
+    H1("Key numbers and conventions")
     P("All numbers were measured on a DGX Spark with the GB10 chip, between 12 and 20 November 2026, unless stated "
       "otherwise. Program names are set in " + mono("monospace") + ". In the diagrams, colour shows where something "
       "runs: orange is the board and FPGA, grey the network, blue the host CPU, green the GPU and its memory, purple "
@@ -530,14 +534,15 @@ def content():
       "writer, " + mono("lft3-capture") + ", fills it at line rate. Readers attach to it, read it at their own pace, "
       "and can come and go at any time. The writer never waits for a reader. A reader that falls more than the ring's "
       "length behind loses blocks and counts them as overruns, so the capture stays lossless whatever the readers "
-      "do. Each process runs in its own container, so a crashing or slow reader cannot affect the capture.")
+      "do. Each process runs in its own container, so a crashing or slow reader cannot affect the capture; the live "
+      "search (§8) runs on the host in its own Python environment.")
     FIGURE("f14_processes", "Processes and containers for one board. They share only shared memory and the GPU ring.")
-    P(mono("lft3-pipeline") + " starts the capture first, waits until its ring exists, then starts the readers. On "
-      "stop, by Ctrl-C, a time limit or " + mono("lft3-pipeline stop") + ", it reverses the order: readers first, so "
-      "they close their files while the ring still exists, then the capture. Each run writes its logs, status time "
+    P(mono("lft3-pipeline") + " starts the capture first, waits until its ring exists, then starts the readers and "
+      "the live search. On stop, by Ctrl-C, a time limit or " + mono("lft3-pipeline stop") + ", it reverses the "
+      "order: the search, then the readers, so they close their files while the rings still exist, then the "
+      "capture. Each run writes its logs, status time "
       "series and NIC counters to a run directory.")
-    N("<b>Why not a dataflow framework?</b> The first implementation was a CyberEther plugin. It ran at line rate, but "
-      "CyberEther runs every block in lock-step on one scheduler thread, so any slow consumer stalls the receiver, "
+    N("<b>Why not a dataflow framework?</b> A CyberEther plugin ran at line rate, but CyberEther runs every block in lock-step on one scheduler thread, so any slow consumer stalls the receiver, "
       "which then drops packets. Holoscan 5.0 and hashpipe were also evaluated. Holoscan 5.0 is a fresh rewrite with "
       "Beta APIs; hashpipe hands each buffer to one consumer through semaphores, which is back-pressure. The ring "
       "design keeps the property that matters: the readers can never hold up the receiver.")
@@ -629,10 +634,10 @@ def content():
       "VMM allocation with 2 MiB pages, exported as a file descriptor and handed to readers over a unix socket. "
       "Each reader maps it <i>read-only</i> at full GPU bandwidth, so a buggy reader cannot corrupt the data.")
     P("Each block is laid out as [beam][channel][1024 t][pol], one complex int8 per element. This is GUPPI RAW order "
-      "per beam: a fine FFT reads contiguous samples, and a dump writes a block as it is. An earlier layout kept one "
-      "row per channel across the whole ring, so that any FFT length would read contiguously. It was measured and "
-      "rejected: the scatter's writes to 12 288 far-apart rows thrashed the GPU's address translation, and throughput "
-      "fell to 6 GB/s, below the required 7.5 GB/s.")
+      "per beam: a fine FFT reads contiguous samples, and a dump writes a block as it is. Keeping one row per channel "
+      "across the whole ring instead, so that any FFT length reads contiguously, does not work: the scatter's writes "
+      "to 12 288 far-apart rows thrash the GPU's address translation, and throughput falls to 6 GB/s, below the "
+      "required 7.5 GB/s.")
     BG("TLB", "Programs use virtual addresses; the hardware translates them to physical memory one page at a time, "
        "4 KiB or 2 MiB, and caches recent translations in a <i>translation lookaside buffer</i> (TLB). A kernel that "
        "touches thousands of pages at once, as the rejected layout did, misses the TLB constantly, and every miss costs "
@@ -664,8 +669,8 @@ def content():
        "Record n + 1 as its cursor, with its lag and a heartbeat; status tools read these.")
     P("For synthetic and file sources only, readers can be <i>lossless</i>. The writer then waits until every "
       "lossless reader with a live heartbeat has moved at least 8 slots beyond a slot before reusing it. Tests and "
-      "benchmarks use this to process every block. The 8-slot margin came out of a parity test, which caught a bug "
-      "when the margin was 0.")
+      "benchmarks use this to process every block. The 8-slot margin is needed: with none, a parity test showed "
+      "lossless readers skipping blocks.")
 
     H2("The fine spectrometer")
     BG("why a second FFT", "Each 152.6 kHz board channel is itself a time series of complex samples. Fourier "
@@ -689,9 +694,9 @@ def content():
     H3("The warp FFT")
     FIGURE("f12_warp_fft", "Warp FFT for N = 128: each of the 32 lanes holds 4 samples; a small transform in "
                            "registers is followed by a 32-point FFT across the lanes. 8 lanes and 3 of 5 stages drawn.")
-    P("The first kernel did the FFT in shared memory with 64 threads per channel and beam. Profiling showed it limited "
-      "by its 56 barriers per block of data, not by arithmetic. A twiddle table was tried and was not faster. The "
-      "current kernel gives each FFT to one warp of 32 threads and never synchronises. It uses the classic "
+    P("An FFT in shared memory with 64 threads per channel and beam is limited by its 56 barriers per block of "
+      "data, not by arithmetic, and a twiddle table does not help. The spectrometer therefore gives each FFT to one "
+      "warp of 32 threads and never synchronises. It uses the classic "
       "Cooley–Tukey idea that an N-point FFT with N = R × 32 can be done as R-point transforms followed by 32-point "
       "transforms, with a 'twiddle' phase factor in between. For N = 128, R = 4:")
     NL("Lane j, for j = 0 … 31, loads samples j, j+32, j+64 and j+96 of both polarisations. Each load by the warp "
@@ -704,7 +709,8 @@ def content():
        "Lane l now holds the frequency bins q + 4·bitrev(l). It forms |X|² + |Y|², sums the 8 segments of the block in "
        "registers, and adds the 4 fftshifted bins to the accumulator.")
     P("The same scheme covers 64 and 256 points; other lengths use the shared-memory kernel. The warp kernel takes "
-      "0.30 ms per 6.71 ms block for both beams, against 0.50 ms before, is close to memory-bound, and matches a "
+      "0.30 ms per 6.71 ms block for both beams, against 0.50 ms for the shared-memory kernel, is close to "
+      "memory-bound, and matches a "
       "reference DFT to better than 10<super>−4</super>.")
     H3("Time grid, missing data and the coarse product")
     B("<b>Integration windows are aligned to absolute block numbers</b>: window w covers blocks 149w … 149w + 148, "
@@ -718,6 +724,9 @@ def content():
       "writer thread computes it on the CPU from each fine spectrum. It agrees with a direct computation from the "
       "voltages to 2.6 × 10<super>−6</super>. A separate coarse reader is only needed for a faster cadence, such as "
       "0.1 s.",
+      "<b>Output</b>: each finished spectrum is copied device to device into the spectra ring for the live search "
+      "(§8), then copied to the host for a writer thread. The writer compresses the spectrum's 65 536-channel "
+      "chunks on four threads, about 160 MB/s, so it never holds up the GPU work.",
       "<b>Frequency axis</b>: the first channel frequency and channel width come from the exact NCO in the "
       "configuration; the header's whole-MHz value is only a fallback. <b>Time</b>: the UNIX time of t = 0 is "
       "estimated from the first packet's arrival, to about a millisecond, until the firmware provides a sync aligned "
@@ -726,8 +735,9 @@ def content():
     H2("Triggered raw-voltage dumps")
     FIGURE("f13_dump", "A dump copies a window around the trigger time out of the ring: the part before the trigger, "
                        "teal, is already there; the part after, red, is copied as it arrives.")
-    P(mono("lft3-pipeline trigger") + " sends a command to each board's " + mono("lft3-dump") + " over a unix socket: "
-      "a UNIX time plus seconds before and after, by default 0.5 + 0.5. The dump process converts the time to block "
+    P(mono("lft3-pipeline trigger") + ", or the live search when its triggers are enabled (§8), sends a command to "
+      "a board's " + mono("lft3-dump") + " over a unix socket: a UNIX time plus seconds before and after, by default "
+      "0.5 + 0.5. The dump process converts the time to block "
       "numbers using the capture's time base. It copies every block of the window that is still in the ring, and the "
       "later ones as they are published, into a pinned host buffer, checking each with the seqlock. It then writes the "
       "window to NVMe as GUPPI RAW, one file per beam. Each GUPPI block is one beam of a ring block, behind a header "
@@ -840,8 +850,8 @@ def content():
       "<b>Trials beyond the limit.</b> hyperseti's default plan, 'stepped', starts with as many trials as there are "
       "spectra, which on short windows reaches far past the requested ±200 Hz/s and produced ghost hits at "
       "400–600 Hz/s. The 'optimal' plan, every trial within the limit, is used instead.",
-      "<b>Slow merging.</b> Merging neighbouring hits ran one database-style query per hit: 13.9 s for a window of "
-      "live data with 3700 hits. A vectorised version with the same rule gives identical results on live data in "
+      "<b>Slow merging.</b> hyperseti merges neighbouring hits with one database-style query per hit: 13.9 s for "
+      "a window of live data with about 4000 hits. A vectorised version with the same rule gives identical results on live data in "
       "under 0.05 s.")
     P("The window length sets the drift resolution: one channel width divided by the window, 1192 Hz / 64 s = "
       "18.6 Hz/s. With 16-spectrum windows a drift moves a signal by only two or three channels and the measured "
@@ -864,18 +874,20 @@ def content():
           [0.32, 0.68], "Validation of the live search, 20 November 2026. Synthetic runs use non-repeating noise "
                         "generated on the GPU with a drifting tone injected into one input.")
     H2("From hits to triggers")
-    P("On live data a window gave about 4100 hits before the zero-drift drop; 99.9 % of the unlabelled ones were "
+    P("On live data a window gives about 4000 hits before the zero-drift drop; 99.9 % of the unlabelled ones were "
       "stationary: Wi-Fi, the board spurs and other local interference. After the drop about 160 remain per "
       "window, 97 % of them labelled Wi-Fi and about four unlabelled. The strongest unlabelled ones drift by "
-      "exactly one step, ±18.6 Hz/s: still stationary signals, measured one step off zero, so the trigger rules "
-      "should also require a drift larger than one step. The remaining hits can drive the raw-voltage dump:")
+      "exactly one step, ±18.6 Hz/s: still stationary signals, measured one step off zero. The remaining hits can "
+      "drive the raw-voltage dump:")
     B("after each window, the strongest hit with S/N of at least 50, not labelled as known RFI, and not also seen "
       "by the board's other beam within two channels, triggers a raw-voltage dump of that board;",
       "at most one trigger per 10 s per board; each is logged with the hit's window, beam, frequency, drift and "
       "S/N;",
       "the dump records the moment the hit is found. The voltage ring holds about 2 s, while a window ends up to a "
       "minute before its search finishes, so the trigger catches a signal that is still there, not the window "
-      "itself. Recording the window's own voltages needs a much longer raw buffer, a sizing question (§11).")
+      "itself. Recording the window's own voltages needs a much longer raw buffer, a sizing question (§11).",
+      "a minimum drift (zero by default) can be set; given the stationary hits one step off zero, it should be at "
+      "least one step before triggers are enabled.")
     P("With a drifting synthetic tone every searched window triggers a complete one-second dump, 32 s apart; a "
       "stationary tone is found, dropped and triggers nothing. Triggering is off by default: the rules for what "
       "deserves a dump are still to be agreed. The searches' cost against resolution and integration time is in "
@@ -886,23 +898,24 @@ def content():
     CODE("lft3-board start                         # program, initialise and sync every board (~10 s)\n"
          "lft3-board status                        # health checks\n"
          "lft3-pipeline run                        # every board: capture + spectrometer + dump + live search\n"
-         "lft3-pipeline run --source synthetic     # without a board: noise + a tone\n"
-         "lft3-pipeline status                     # every ring on this host: rate, loss, readers\n"
-         "lft3-pipeline trigger --label test       # raw-voltage dump of every board\n"
-         "lft3-pipeline stop                       # readers first (files closed), then capture\n"
          "lft3-pipeline run --observation NAME     # another observation configuration\n"
          "lft3-pipeline run --search-triggers      # live hits trigger raw-voltage dumps (off by default)\n"
+         "lft3-pipeline run --source synthetic     # without a board: noise + a tone\n"
+         "lft3-pipeline status                     # every ring on this host: rate, loss, readers, search\n"
+         "lft3-pipeline trigger --label test       # raw-voltage dump of every board\n"
+         "lft3-pipeline stop                       # search and readers first (files closed), then capture\n"
          "lft3-search FILE.h5                      # hyperseti on a finished file (same windows as live)\n"
          "lft3-view                                # browser viewer on port 8687")
     P("A healthy run prints, every 10 s per board: 60.8 Gb/s, no increase in partial or skipped blocks or missing "
-      "packets, and readers at lag 0 with no overruns. Every run gets a directory with one log per process, the exact "
+      "packets, readers at lag 0 with no overruns, and the search's window count rising every 32 s. Every run gets a directory with one log per process, the exact "
       "container commands, a time series of all counters, and the NIC's drop and pause counters. Those NIC counters "
       "separate loss on the host from loss before the host: if they stay flat, the packets never arrived. The same "
       "counters can be served to Prometheus.")
     P("Containers: the capture container gets network access with only the capabilities DAQIRI needs, raw network "
       "access, locked memory and the RDMA devices, and is not privileged. Readers run as the invoking user with no "
-      "network at all, and talk to the capture only through shared memory and the GPU. All binaries are built in one "
-      "container image with CUDA 13. No step needs root on the host.")
+      "network at all, and talk to the capture only through shared memory and the GPU. The live search runs on the "
+      "host as the invoking user, in a Python environment with CuPy and hyperseti, pinned to efficiency cores. All "
+      "binaries are built in one container image with CUDA 13. No step needs root on the host.")
 
     # ------------------------------------------------------------------------------------------------ 10
     H1("Performance and capacity")
@@ -932,11 +945,11 @@ def content():
       "linearly because all streams compete for the same memory bus, which slows every kernel.")
     P("Two limits lie outside this test. <b>The network</b>: the Spark's two QSFP ports take one board each, so two "
       "boards per Spark is what is known to work; four would need a switch and has not been tested. <b>The memory bus "
-      "seen by the NIC</b>: the synthetic test has no NIC, but live, a search on the same machine made the NIC drop "
-      "packets. Capacity planning has to leave memory-bus headroom, not just GPU headroom.")
+      "seen by the NIC</b>: the synthetic test has no NIC, but live, a search on files on the same machine made the "
+      "NIC drop packets; the live search does not. Capacity planning has to leave memory-bus headroom, not just GPU headroom.")
     TABLE([["Configuration", "Boards per Spark", "Sparks for 6 boards", "Comment"],
            ["Two boards per Spark", "2", "3", "one board per QSFP port, known to work; about 46 % GPU, room for "
-                                              "throttled searches"],
+                                              "the live search"],
            ["Four boards per Spark", "4", "2", "fits the compute at 87 % GPU but needs a switch, untested, and leaves "
                                                "little for searches"],
            ["Hz resolution, 1.16 Hz", "about 1", "about 6", "the FFT alone runs at 3.1× real time per beam on the GB10; "
@@ -971,13 +984,13 @@ def content():
       "looked stationary and was dropped. Short integrations need more spectra per window.")
 
     H2("Comparison with rawspec")
-    FIGURE("c3_rawspec", "rawspec, Breakthrough Listen's standard fine channeliser, against our spectrometer, per "
+    FIGURE("c3_rawspec", "rawspec, Breakthrough Listen's standard fine channeliser, against the LFT3 spectrometer, per "
                          "block of one beam, on a log scale.", width=13.5 * cm)
     P("Breakthrough Listen and the related SETI backends also form fine channels with a plain FFT after the FPGA's "
-      "polyphase filterbank, as we do. rawspec is their standard tool: cuFFT with load and store callbacks, built for "
-      "very long FFTs. Built for this GPU and run on a GUPPI RAW dump from our system, it produces the same spectra "
-      "as ours after its 1/127 sample scaling, with a median relative difference of 7.6 × 10<super>−8</super>. At "
-      "128 points our fused kernel is about 60× faster. At 2<super>17</super> points rawspec cannot keep up with even "
+      "polyphase filterbank, as LFT3 does. rawspec is their standard tool: cuFFT with load and store callbacks, built "
+      "for very long FFTs. Built for this GPU and run on a GUPPI RAW dump from LFT3, it produces the same spectra "
+      "after its 1/127 sample scaling, with a median relative difference of 7.6 × 10<super>−8</super>. At 128 points "
+      "the fused kernel is about 60× faster. At 2<super>17</super> points rawspec cannot keep up with even "
       "one beam on the GB10. A plain cuFFT at that length runs at 3.1× real time per beam before detection, which "
       "sets the cost of the Hz-resolution mode.")
 
@@ -1032,8 +1045,9 @@ def content():
            ["32", "320 s", "±1 / ±10 Hz/s", "255 / 447", "3.5 / 2.1 M channels/s", "1.5 / 2.4"]],
           [0.16, 0.1, 0.16, 0.15, 0.23, 0.2], "hyperseti on the GB10. A board at 1.16 Hz has 1.61 × 10<super>9</super> "
                                               "Stokes-I channels.")
-    P("hyperseti tests every drift up to the window length and then doubles its step. Its cost therefore depends only "
-      "weakly on the drift range and grows roughly with the number of spectra per search. At Hz resolution the "
+    P("With its 'stepped' plan, which this sizing assumes, hyperseti tests every drift up to the window length and "
+      "then doubles its step. (The live search at 1.2 kHz uses the 'optimal' plan, every trial within the drift "
+      "range, which is cheap for short windows; §8.) The cost therefore depends only weakly on the drift range and grows roughly with the number of spectra per search. At Hz resolution the "
       "search costs about three times as much as the channeliser. Its kernel reaches about 3 × 10<super>10</super> "
       "cell sums per second, well below what the GPU can do, so a better kernel may be several times faster; that "
       "is not yet measured.")
@@ -1138,26 +1152,26 @@ def content():
                                                              "readers overran"],
            ["Backpressure margin of 8 slots, tests only", "parity run found lossless readers skipping blocks with "
                                                           "margin 0"],
-           ["Quick-look derived from fine spectra", "a separate reader cost 0.23 ms and 7.5 GB/s per block; Parseval "
-                                                    "gives it for free, agreeing to 2.6 × 10<super>−6</super>"],
+           ["Capture container not privileged", "three capabilities verified live at line rate"],
+           ["Integration windows on absolute block numbers", "one time grid for all readers and boards"],
            ["Warp FFT kernel", "shared-memory kernel barrier-bound at 0.50 ms; warp kernel 0.30 ms, verified against "
                                "a DFT"],
-           ["Integration windows on absolute block numbers", "one time grid for all readers and boards"],
-           ["Capture container not privileged", "three capabilities verified live at line rate"],
            ["Plain FFT, no fine PFB", "same choice as rawspec and seticore; affordable later if leakage matters"],
+           ["Quick-look derived from fine spectra", "a separate reader cost 0.23 ms and 7.5 GB/s per block; Parseval "
+                                                    "gives it for free, agreeing to 2.6 × 10<super>−6</super>"],
+           ["Compress FBH5 chunks in parallel", "one thread compresses about 50 MB/s, four about 160 MB/s; same "
+                                                "bytes, written chunk by chunk"],
+           ["Observation configuration file", "one place for resolution, integration, products and search, used by "
+                                              "runs and searches"],
            ["Live search on a GPU spectra ring", "file searches cost NIC packets; the live search adds 6.3 MB/s of "
                                                  "memory traffic and lost nothing in a one-hour soak"],
            ["One search code for live and files", "same windows, bit-identical data, identical hits"],
            ["hyperseti with rounded shifts, optimal plan, 64-spectrum windows", "synthetic drifting tones: zero drift "
                                                                                 "reported correctly, no out-of-range "
                                                                                 "ghosts, drift to one 18.6 Hz/s step"],
-           ["Observation configuration file", "one place for resolution, integration, products and search, used by "
-                                              "runs and searches"],
            ["Drop zero-drift hits", "99.9 % of unlabelled live hits were stationary local interference"],
            ["Search triggers dumps, off by default", "tested end to end; rules (S/N, single beam, RFI labels, 10 s "
                                                      "minimum) to be agreed"],
-           ["Compress FBH5 chunks in parallel", "one thread compresses about 50 MB/s, four about 160 MB/s; same "
-                                                "bytes, written chunk by chunk"],
            ["Production: one RTX PRO 6000 per board, 3 servers", "all stages bandwidth-bound; 3.3 GB10-equivalents per "
                                                                  "board at 1.16 Hz against 4.1 per card at 70 %"]],
           [0.38, 0.62], "The main design decisions.")
@@ -1176,12 +1190,12 @@ def content():
       "<b>Time reference</b>: t = 0 is estimated from packet arrival, to about a millisecond. A sync aligned to the "
       "PPS in firmware would make timestamps exact. The board clock also reads about −24 ppm against the temporary "
       "PPS.",
-      "<b>Hz resolution</b>: needs a fused channeliser that gathers 64–128 blocks per channel, and the science "
-      "choices of §11.",
+      "<b>Hz resolution</b>: needs a fused channeliser that gathers 64–128 blocks per channel, integrations of about "
+      "10 s with the 'stepped' search plan (§10), and the science choices of §11.",
       "<b>Production hardware</b>: port the runtime to x86 with GPUDirect, then test on one RTX PRO 6000 server "
       "before buying (§11).",
       "<b>Search</b>: the live search drops stationary hits and can trigger dumps (off). Next: agree the trigger "
-      "rules, cluster hits across windows and boards, a longer raw-voltage buffer if triggers should capture the "
+      "rules, including a minimum drift of one step, cluster hits across windows and boards, a longer raw-voltage buffer if triggers should capture the "
       "window itself, and heimdall for wideband transients from the coarse data. hyperseti's shift rounding should "
       "be reported upstream.",
       "<b>Recording rate</b>: the spectra writer manages about 160 MB/s on four threads; 149–298 Hz channels at "
