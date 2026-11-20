@@ -105,12 +105,26 @@ FBH5 files also open with blimpy, turboSETI and hyperseti.
 For browsing whole files (pan/zoom from the full band down to single fine channels):
 
 ```bash
-make viewer                     # once; builds in the lft3-runtime container
-tools/viewer/build/lft3-view    # prints http://<spark>:8687/?token=...; open it in a browser
+make viewer     # once; builds in the lft3-runtime container and links lft3-view into the venv's bin/
+lft3-view       # prints http://<spark>:8687/?token=...; open it in a browser
 ```
 
 An overview of a 1-hour file takes ~1.7 s and zooms take tens of ms. It also follows files that are still being
 written. See `tools/viewer/README.md`.
+
+### Removing old data
+
+`scripts/clean_data.sh` removes the files of previous observations and dumps from the station data directory:
+spectra, hits, run records, raw-voltage dumps (with `triggers.log`) and DDR captures. `reference/`, `bench/`,
+`plots/` and `synthetic/` are never touched. It is a dry run unless given `--yes`, and it refuses to run while
+lft3 pipeline containers are up.
+
+```bash
+scripts/clean_data.sh                          # what would be removed, per category, with sizes
+scripts/clean_data.sh --yes                    # remove all of it
+scripts/clean_data.sh --older-than 7 --yes     # only files not modified for 7 days
+scripts/clean_data.sh --only dumps --yes       # one category: spectra | hits | runs | dumps | captures
+```
 
 ## 5. What you should see with nothing connected (2026-11-12)
 

@@ -22,6 +22,8 @@ blocks (counted); the capture never loses data because of a reader.
 ```bash
 make install                 # Python tools into /opt/lft3arth/lft3arth_venv
 make pipeline                # builds the lft3-runtime image (first time) and pipeline/build/lft3-{capture,spectrometer,dump}
+make viewer                  # lft3-view; linked into the venv's bin/ like the other commands
+export PATH=/opt/lft3arth/lft3arth_venv/bin:$PATH   # all lft3-* commands (put it in ~/.profile)
 make pipeline-test           # C++/CUDA unit tests on the GPU
 make test && make lint       # Python tests
 ```
@@ -149,7 +151,7 @@ The FBH5 files open with `lft3-plot`, `lft3-view` (browser), blimpy, turboSETI a
 ```bash
 lft3-plot latest                                       # newest file
 lft3-plot waterfall FILE --fmin 2400 --fmax 2425 --flatten
-tools/viewer/build/lft3-view                           # pan/zoom in a browser (make viewer once)
+lft3-view                                              # pan/zoom in a browser (make viewer once)
 ```
 
 Important attributes (on `/data` and the root):

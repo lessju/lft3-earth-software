@@ -38,6 +38,7 @@ management) and `lft3.triggering` as Python subpackages, and further ring reader
 
 ```bash
 make install            # pip install -e '.[dev]' into /opt/lft3arth/lft3arth_venv (Python 3.8 + casperfpga)
+make viewer             # build lft3-view; install and viewer link it and lft3-search into the venv's bin/
 make test               # Python unit tests, no hardware
 make lint               # ruff
 make pipeline           # build the runtime in the lft3-runtime container

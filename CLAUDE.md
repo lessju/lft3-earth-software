@@ -50,6 +50,7 @@ Key firmware-side files:
 
 ```bash
 make install         # pip install -e '.[dev]' into /opt/lft3arth/lft3arth_venv (done; console scripts in its bin/)
+make link-tools      # symlinks lft3-view(-bench) and lft3-search into that bin/ too (run by install and viewer)
 make test            # Python tests (no hardware);  make lint  (ruff, target py38)
 make test-hardware   # read-only, live board
 make pipeline        # C++/CUDA runtime build in the lft3-runtime container;  make pipeline-test  (+ GPU tests)
@@ -58,9 +59,10 @@ make pipeline        # C++/CUDA runtime build in the lft3-runtime container;  ma
 lft3-board status | start | snapshot fft|adc [--plot] | capture [--ddr-size 0xFFFFF] | sync | trigger
 lft3-pipeline run [--source network|synthetic|file --file X.pcap --loop] [--links link0] [--duration S]
 lft3-pipeline status | trigger [--pre --post --label] | stop
-/opt/lft3arth/search_venv/bin/lft3-search FILE.h5 | --watch [--once]      # hyperseti; not during live capture
+lft3-search FILE.h5 | --watch [--once]      # hyperseti (search venv, linked); not during live capture
 lft3-plot info|spectrum|waterfall|capture FILE [--fmin --fmax --flatten];  lft3-plot latest
 lft3-pcap check cap.pcap | synth out.pcap
+scripts/clean_data.sh [--yes] [--older-than DAYS] [--only spectra|hits|runs|dumps|captures]   # dry run without --yes
 
 # capture (needs root; Claude has no passwordless sudo, so ask the user to run it)
 sudo tcpdump -i enp1s0f0np0 -s 0 -B 1048576 -c 20000 -w cap.pcap udp
