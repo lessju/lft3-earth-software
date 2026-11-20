@@ -275,9 +275,8 @@ def cover():
     story.append(Spacer(1, 0.8 * cm))
     meta = [["Scope", "One RFSoC 4x2 board streaming to one NVIDIA DGX Spark, and the sizing of the full station: "
                       "6 boards with one 100 GbE link each"],
-            ["State", "Implemented and running live at 60.8 Gb/s; 2-hour soak without loss of the system's own "
-                      "making; live drift search on the GPU spectra, 1-hour soak without loss. Production hardware "
-                      "sized, not yet bought"],
+            ["State", "Implemented and running live at 60.8 Gb/s with a live drift search on the GPU spectra; "
+                      "one-hour soak without packet loss. Production hardware sized, not yet bought"],
             ["Version", f"{VERSION} · {DATE}"]]
     t = Table([[Paragraph(a, S["cellb"]), Paragraph(b, S["cell"])] for a, b in meta],
               colWidths=[2.6 * cm, A4[0] - 4.2 * cm - 2.6 * cm], hAlign="LEFT")
@@ -303,7 +302,7 @@ def content():
       "records raw voltages on demand, and monitors and controls the boards.")
     H3("Where it stands")
     B("One board streams to one NVIDIA DGX Spark, the development host. The real-time runtime runs live at line "
-      "rate: a 2-hour soak test lost no data through the system's own doing.",
+      "rate without packet loss.",
       "The receiver never waits for anything downstream. It writes voltages into a ring in GPU memory, and "
       "independent readers process them at their own pace: today the 1.2 kHz spectrometer and the raw-voltage dump. "
       "A slow or crashed reader cannot cause data loss.",
@@ -337,19 +336,12 @@ def content():
       "<b>Still to verify on the board</b>: which inputs pair into a dual-polarisation beam, and an exact time "
       "reference through a firmware sync aligned to the PPS.")
 
-    H1("About this document")
-    P("This document explains how the LFT3-Earth digital backend works, end to end. It starts from the radio signal "
-      "at the RFSoC board's inputs and ends with spectra on disk, raw-voltage dumps, search hits and the browser "
-      "viewer. It then sizes the computing needed for the full station. It is written for engineers and astronomers "
-      "who need to understand, operate, debug or extend the system. It covers what each part does, how data moves "
-      "through memory, which algorithms are used, and why they were chosen. Where to find each part in the "
-      "repository, and the documents with more detail, are listed in the appendix.")
-    P("All numbers were measured on the system itself, a DGX Spark with the GB10 chip, between 12 and 20 November "
-      "2026, unless stated otherwise. Program names are set in " + mono("monospace") + ". In the diagrams, colour "
-      "shows where something runs: orange is the board and FPGA, grey the network, blue the host CPU, green the GPU "
-      "and its memory, purple storage, and teal the reader processes. Diagrams are kept sparse; the text around them "
-      "carries the detail. Shaded boxes explain concepts specific to radio instrumentation or GPU programming; skip "
-      "them if they are familiar.")
+    H1("Conventions")
+    P("All numbers were measured on a DGX Spark with the GB10 chip, between 12 and 20 November 2026, unless stated "
+      "otherwise. Program names are set in " + mono("monospace") + ". In the diagrams, colour shows where something "
+      "runs: orange is the board and FPGA, grey the network, blue the host CPU, green the GPU and its memory, purple "
+      "storage, and teal the reader processes. Shaded boxes explain concepts from radio instrumentation and GPU "
+      "programming.")
     TABLE([["Quantity", "Value"],
            ["Station", "6 RFSoC 4x2 boards (5 UHF, 1 VHF), one 100 GbE link each"],
            ["Sampling", "5 GSPS real per ADC input → 1250 MSPS complex after down-conversion"],
@@ -768,8 +760,8 @@ def content():
       "rawspec and blimpy. Files rotate every 3600 spectra, and the timestamps continue exactly across rotations, so "
       "tools can chain them into one run.")
     H2("What the spectra look like")
-    P("The figure below shows real output: the first hour of the 2-hour soak test of 13 November 2026, beam 0, with "
-      "no test signal applied. Power is in dB relative to the median channel, which is the receiver's own noise. "
+    P("Real output: the first hour of the 2-hour soak test of 13 November 2026, beam 0, with no test signal "
+      "applied. Power is in dB relative to the median channel, which is the receiver's own noise. "
       "These are the same views " + mono("lft3-view") + " offers interactively (§7).")
     FIGURE("c5_spectra", "Fine spectra from the soak test. (a) Full band, 5-minute average with the coarse-channel "
                          "response divided out; each plotted point covers 256 fine channels. (b) The spur at 2125 MHz "
@@ -819,7 +811,7 @@ def content():
     FIGURE("f17_live_search", "The live search. The spectrometer copies each 1-second spectrum into a small ring in "
                               "GPU memory; the search keeps the last 64 and searches them every 32. The file search "
                               "runs the same code on the same windows.")
-    B("The spectrometer already holds every integrated spectrum on the GPU. It now also copies it, device to device, "
+    B("The spectrometer holds every integrated spectrum on the GPU and copies it, device to device, "
       "into a <b>spectra ring</b> of 64 slots of 6.3 MB, built exactly like the voltage ring, with the same "
       "never-wait rule.",
       "The search process registers as a reader of that ring, copies each new spectrum once into its own buffer of "
@@ -834,12 +826,13 @@ def content():
       "zero-drift hits dropped, triggers, time taken and latency.",
       mono("lft3-pipeline") + " starts and stops the search with the run and shows its lag and window count. If "
       "the search fails, the run continues without it.")
-    P("Why live from GPU memory: the earlier search on finished files read, decompressed and copied gigabyte files "
-      "to the GPU in bursts, and once made the NIC drop 277 packets by loading the shared memory bus (§10). The live "
-      "search moves each spectrum across the bus once more, 6.3 MB per second, and costs no packets.")
+    P("Why live from GPU memory: a search on finished files reads, decompresses and copies gigabyte files to the "
+      "GPU in bursts. On the Spark that loads the shared memory bus enough to make the NIC drop packets (277 in one "
+      "test, §10). The live search moves each spectrum across the bus once more, 6.3 MB per second, and costs no "
+      "packets.")
     H2("Making hyperseti work on short windows")
-    P("hyperseti was written for files of many minutes. Testing it on one-minute windows with synthetic drifting "
-      "tones found three problems, all fixed in our code without changing hyperseti itself:")
+    P("hyperseti is designed for files many minutes long. On one-minute windows three of its behaviours need "
+      "correcting; the search does this without modifying hyperseti:")
     B("<b>Truncated shifts.</b> The dedoppler kernel shifts spectrum <i>t</i> of drift trial <i>d</i> by "
       "<i>d·t/T</i> channels in integer arithmetic, rounding toward zero. Over long files this is invisible. Over 16 "
       "spectra the ±1 trials never shift any spectrum, so they equal zero drift, and a stationary tone was reported "
@@ -883,10 +876,10 @@ def content():
       "the dump records the moment the hit is found. The voltage ring holds about 2 s, while a window ends up to a "
       "minute before its search finishes, so the trigger catches a signal that is still there, not the window "
       "itself. Recording the window's own voltages needs a much longer raw buffer, a sizing question (§11).")
-    P("Tested with a drifting synthetic tone: every searched window triggered a complete one-second dump, 32 s "
-      "apart; a stationary tone was found, dropped and triggered nothing. Triggering is built but switched off "
-      "until the rules for what deserves a dump are agreed. The searches' cost against resolution and integration "
-      "time is measured in §10.")
+    P("With a drifting synthetic tone every searched window triggers a complete one-second dump, 32 s apart; a "
+      "stationary tone is found, dropped and triggers nothing. Triggering is off by default: the rules for what "
+      "deserves a dump are still to be agreed. The searches' cost against resolution and integration time is in "
+      "§10.")
 
     # ------------------------------------------------------------------------------------------------ 9
     H1("Operating the system")
@@ -957,13 +950,12 @@ def content():
       "allows, for four channel widths and four integration times. The speed is then the stream's capacity in units "
       "of real time: 1 or more keeps up.")
     FIGURE("c8_resolution", "Capacity of one stream against fine channel width and integration time. (a) The whole "
-                            "chain writing its spectra to disk, with four compression threads; dashed, the earlier "
-                            "single-thread writer; (b) the same without writing; (c) the live search alone on an "
+                            "chain writing its spectra to disk, with four compression threads; dashed, with one "
+                            "compression thread; (b) the same without writing; (c) the live search alone on an "
                             "idle GPU, extended to Hz resolution with a ±4 Hz/s drift range. 64-spectrum windows "
                             "throughout.", width=16 * cm)
-    B("<b>Writing the spectra was the limit.</b> The first benchmark found the FBH5 writer compressing on one thread "
-      "at about 50 MB/s. It now compresses the chunks of each spectrum on four threads, about 160 MB/s, and "
-      "recording keeps up while fine channels per board channel divided by the integration time stays below about "
+    B("<b>Writing the spectra sets the limit.</b> The FBH5 writer compresses the chunks of each spectrum on four "
+      "threads, about 160 MB/s; one thread manages about 50 MB/s (dashed lines). Recording keeps up while fine channels per board channel divided by the integration time stays below about "
       "4000 per second: 149 Hz down to 0.25 s, or 596 Hz at 0.1 s. Without writing, every tested combination keeps "
       "up, down to 149 Hz at 0.1 s.",
       "<b>The search</b> costs a fixed part per window, about 21 ms per 2<super>17</super> channels for normalising "
@@ -991,9 +983,9 @@ def content():
 
     # ------------------------------------------------------------------------------------------------ 11
     H1("Sizing the full station")
-    P("The Sparks are development machines. This chapter scales the measurements above to the full station of six "
-      "boards, 366 Gb/s, on servers with discrete GPUs, and finds what drives the cost: the fine resolution, and above "
-      "all the narrowband drift search. NVIDIA's top datacentre GPUs and servers are left out; the candidates are the "
+    P("The Sparks are development machines. Scaled to the full station of six boards, 366 Gb/s, on servers with "
+      "discrete GPUs, the measurements show what drives the cost: the fine resolution, and above all the narrowband "
+      "drift search. NVIDIA's top datacentre GPUs and servers are left out; the candidates are the "
       "RTX PRO Blackwell cards, with the L40S and L4 for comparison.")
     H2("A common unit of cost")
     P("Every stage measured so far is limited by memory bandwidth, not arithmetic: the scatter at about 200 GB/s, the "
@@ -1028,7 +1020,7 @@ def content():
            ["<b>Full band at 1.16 Hz with the drift search</b>", "<b>about 3.3</b>", ""]],
           [0.58, 0.18, 0.24], "Cost per board, two dual-polarisation beams. The VHF board counts at half, because "
                               "two of its four inputs are padding.")
-    P("Two measurements were added for this study. A sweep of cuFFT over all lengths from 2<super>7</super> to "
+    P("Two further measurements feed the sizing. A sweep of cuFFT over all lengths from 2<super>7</super> to "
       "2<super>20</super> points shows a step: up to 2<super>14</super> points one pass through memory costs 0.27 "
       "GB10-equivalents per board; from 2<super>15</super> two passes cost 0.63–0.65. And hyperseti's brute-force "
       "dedoppler kernel was timed on synthetic data with 1.16 Hz channels and 10 s spectra, with an injected "
@@ -1164,15 +1156,16 @@ def content():
            ["Drop zero-drift hits", "99.9 % of unlabelled live hits were stationary local interference"],
            ["Search triggers dumps, off by default", "tested end to end; rules (S/N, single beam, RFI labels, 10 s "
                                                      "minimum) to be agreed"],
-           ["Compress FBH5 chunks in parallel", "the single-thread writer capped recording at about 50 MB/s; same "
+           ["Compress FBH5 chunks in parallel", "one thread compresses about 50 MB/s, four about 160 MB/s; same "
                                                 "bytes, written chunk by chunk"],
            ["Production: one RTX PRO 6000 per board, 3 servers", "all stages bandwidth-bound; 3.3 GB10-equivalents per "
                                                                  "board at 1.16 Hz against 4.1 per card at 70 %"]],
           [0.38, 0.62], "The main design decisions.")
     P("These choices were validated end to end: identical output to the CyberEther implementation, to float "
       "rounding, on deterministic synthetic data; unit tests for every component in C++, CUDA and Python; and a "
-      "2-hour live soak with a DDR dump and a raw-voltage dump every five minutes. The soak had no loss of the "
-      "system's own making; the earlier rare gaps at DDR dumps did not recur.")
+      "2-hour live soak with a DDR dump and a raw-voltage dump every five minutes, and a one-hour live soak with the "
+      "search. Neither lost packets in the runtime or at the NIC, apart from 277 packets the NIC dropped while a "
+      "file search ran on the same Spark.")
 
     # ------------------------------------------------------------------------------------------------ 13
     H1("Limitations and next steps")
