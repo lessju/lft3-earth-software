@@ -297,6 +297,7 @@ class SearchSettings:
     max_drift_hz_s: float = 200.0
     snr_threshold: float = 20.0
     dedoppler_plan: str = "optimal"
+    drop_zero_drift: bool = True
     flatten_coarse_ripple: bool = True
     sk_flag: bool = False
     blank_edge_channels: int = 8
@@ -327,11 +328,25 @@ class SearchSettings:
 
 
 @dataclass
+class TriggerSettings:
+    """Live-search hits that trigger a raw-voltage dump (lft3-dump) of the stream."""
+    enabled: bool = False
+    min_snr: float = 50.0
+    min_abs_drift_hz_s: float = 0.0     # in addition to search.drop_zero_drift
+    skip_rfi_labels: bool = True        # never trigger on hits labelled rfi:...
+    single_beam: bool = True            # skip a hit also seen in the other beam of the board (local RFI)
+    min_interval_s: float = 10.0        # at most one trigger per this many seconds per stream
+    pre_s: float = 0.5                  # dump window around the trigger time (the moment the hit is found:
+    post_s: float = 0.5                 # the ring holds ~2 s, the window's own voltages are long gone)
+
+
+@dataclass
 class ObservationConfig:
     name: str
     description: str = ""
     spectrometer: SpectrometerSettings = field(default_factory=SpectrometerSettings)
     search: SearchSettings = field(default_factory=SearchSettings)
+    trigger: TriggerSettings = field(default_factory=TriggerSettings)
     dump_enabled: bool = True
     dump_max_window_s: float = 1.0
     ring_seconds: float = 2.0
@@ -377,11 +392,13 @@ def parse_observation_config(data: dict, path: str | None = None) -> Observation
     se_d = data.get("search") or {}
     dump_d = data.get("dump") or {}
     ring_d = data.get("ring") or {}
+    trig_d = data.get("triggering") or {}
     known = {"spectrometer": {"fine_channels_per_coarse", "resolution_hz", "integration_s", "coarse_channels",
                               "record_fine", "coarse_product", "spectra_per_file"},
              "search": set(SearchSettings.__dataclass_fields__), "dump": {"enabled", "max_window_s"},
-             "ring": {"seconds"}}
-    for section, d in (("spectrometer", sp_d), ("search", se_d), ("dump", dump_d), ("ring", ring_d)):
+             "ring": {"seconds"}, "triggering": set(TriggerSettings.__dataclass_fields__)}
+    for section, d in (("spectrometer", sp_d), ("search", se_d), ("dump", dump_d), ("ring", ring_d),
+                       ("triggering", trig_d)):
         unknown = set(d) - known[section]
         if unknown:
             raise ConfigError(f"{section}: unknown keys {sorted(unknown)}")
@@ -398,10 +415,12 @@ def parse_observation_config(data: dict, path: str | None = None) -> Observation
     defaults = SearchSettings()
     se = SearchSettings(**{k: type(getattr(defaults, k))(se_d[k]) if k != "hyperseti" else dict(se_d[k] or {})
                            for k in se_d})
+    tdef = TriggerSettings()
+    trig = TriggerSettings(**{k: type(getattr(tdef, k))(v) for k, v in trig_d.items()})
     obs = ObservationConfig(
         name=str(data.get("name", Path(path).stem if path else "observation")),
         description=str(data.get("description", "")),
-        spectrometer=sp, search=se,
+        spectrometer=sp, search=se, trigger=trig,
         dump_enabled=bool(dump_d.get("enabled", True)),
         dump_max_window_s=float(dump_d.get("max_window_s", 1.0)),
         ring_seconds=float(ring_d.get("seconds", 2.0)),
@@ -444,6 +463,13 @@ def validate_observation(o: ObservationConfig) -> None:
         raise ConfigError("search.ring_spectra must be in 16..4096")
     if not 0 <= se.max_missing_fraction <= 1:
         raise ConfigError("search.max_missing_fraction must be in 0..1")
+    tr = o.trigger
+    if tr.enabled and not (se.live and o.dump_enabled):
+        raise ConfigError("triggering needs the live search (search.live) and the dump (dump.enabled)")
+    if tr.min_snr <= 0 or tr.min_interval_s < 0 or tr.pre_s < 0 or tr.post_s < 0:
+        raise ConfigError("triggering: min_snr must be positive, intervals and windows >= 0")
+    if tr.enabled and tr.pre_s + tr.post_s > o.dump_max_window_s:
+        raise ConfigError("triggering: pre_s + post_s exceeds dump.max_window_s")
     if o.ring_seconds < 0.2 or (o.dump_enabled and o.dump_max_window_s + 0.2 > o.ring_seconds):
         raise ConfigError("ring.seconds must be >= 0.2 and longer than dump.max_window_s + 0.2 s")
 
@@ -472,6 +498,7 @@ def observation_to_dict(o: ObservationConfig) -> dict:
                          "coarse_channels": [sp.channel_start, sp.channel_count], "record_fine": sp.record_fine,
                          "coarse_product": sp.coarse_product, "spectra_per_file": sp.spectra_per_file},
         "search": {k: getattr(se, k) for k in SearchSettings.__dataclass_fields__},
+        "triggering": {k: getattr(o.trigger, k) for k in TriggerSettings.__dataclass_fields__},
         "dump": {"enabled": o.dump_enabled, "max_window_s": o.dump_max_window_s},
         "ring": {"seconds": o.ring_seconds},
     }

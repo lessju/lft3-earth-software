@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-from lft3.search.core import HIT_COLUMNS, Searcher, Window, hit_rows, rfi_label, window_ends_at  # noqa: F401
+from lft3.search.core import HIT_COLUMNS, Searcher, Window, hit_rows, rfi_label, searcher_for, window_ends_at  # noqa: F401
 
 SPECTRUM_RATE = 152587.890625
 
@@ -89,7 +89,7 @@ def search_file(path: Path, out_dir: Path, settings, searcher=None, whole_file: 
     if whole_file:
         return _search_whole_file(path, out, settings, n_time, foff, attrs, beam)
     if searcher is None:
-        searcher = Searcher(settings.hyperseti_config(), settings.gulp_channels, settings.flatten_coarse_ripple)
+        searcher = searcher_for(settings)
     import cupy as cp
 
     t0 = time.time()
@@ -134,6 +134,8 @@ def _search_whole_file(path: Path, out: Path, settings, n_time: int, foff: float
     t0 = time.time()
     res = find_et(str(path), settings.hyperseti_config(), gulp_size=settings.gulp_channels)
     tab = res.hit_table if hasattr(res, "hit_table") else res
+    if settings.drop_zero_drift and len(tab):
+        tab = tab[tab["drift_rate"] != 0]
     rows = tab.sort_values("snr", ascending=False) if len(tab) else tab
     with open(out, "w", newline="") as f:
         w = csv.writer(f)
@@ -184,8 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         settings.snr_threshold = a.snr
     if a.gulp is not None:
         settings.gulp_channels = a.gulp
-    searcher = None if a.whole_file else Searcher(settings.hyperseti_config(), settings.gulp_channels,
-                                                  settings.flatten_coarse_ripple)
+    searcher = None if a.whole_file else searcher_for(settings)
 
     if a.files:
         out = a.out or a.files[0].resolve().parent / "hits"

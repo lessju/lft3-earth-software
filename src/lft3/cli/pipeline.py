@@ -3,7 +3,8 @@
   lft3-pipeline [-b rfsoc0] run [--observation NAME] [--links link0,link1] [--source network|synthetic|file]
                     [--file cap.pcap] [--loop] [--fast] [--lossless] [--fft-length 128] [--integration 1.0]
                     [--channels START:COUNT] [--quicklook SECONDS] [--no-coarse] [--no-dump] [--no-record]
-                    [--search | --no-search] [--ring-seconds 2] [--dump-seconds 1] [--duration S]
+                    [--search | --no-search] [--search-triggers | --no-search-triggers]
+                    [--ring-seconds 2] [--dump-seconds 1] [--duration S]
                     [--metrics-port 9110] [--dry-run]
                     synthetic: [--random-noise] [--tone-channel N] [--tone-frequency F] [--tone-drift HZ_S]
                     [--tone-amplitude A] [--drop-fraction F]
@@ -144,12 +145,13 @@ def _wait_for_ring(stream: str, timeout: float, proc: subprocess.Popen) -> bool:
 def effective_observation(obs, opts: RunOptions):
     """The observation config with this run's command-line overrides applied (validated)."""
     eff = dataclasses.replace(obs, spectrometer=dataclasses.replace(obs.spectrometer),
-                              search=dataclasses.replace(obs.search))
+                              search=dataclasses.replace(obs.search), trigger=dataclasses.replace(obs.trigger))
     sp = eff.spectrometer
     sp.fine_channels_per_coarse, sp.integration_s = opts.fft_length, opts.integration_s
     sp.channel_start, sp.channel_count = opts.channel_start, opts.channel_count
     sp.record_fine, sp.coarse_product, sp.spectra_per_file = opts.record, opts.coarse, opts.spectra_per_file
     eff.search.live = opts.search_live
+    eff.trigger.enabled = opts.search_triggers
     eff.dump_enabled, eff.dump_max_window_s, eff.ring_seconds = opts.dump, opts.dump_max_s, opts.ring_seconds
     validate_observation(eff)
     return eff
@@ -169,7 +171,7 @@ def cmd_run(a, st, board) -> int:
                          ("tone_channel", "tone_channel"), ("tone_frequency", "tone_frequency"),
                          ("tone_drift", "tone_drift_hz_s"), ("tone_amplitude", "tone_amplitude"),
                          ("search", "search_live"), ("search_save_every", "search_save_every"),
-                         ("drop_fraction", "drop_fraction")):
+                         ("drop_fraction", "drop_fraction"), ("search_triggers", "search_triggers")):
             if getattr(a, opt) is not None:
                 over[key] = getattr(a, opt)
         for flag, key in (("no_record", "record"), ("no_coarse", "coarse"), ("no_dump", "dump")):
@@ -379,6 +381,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--search", dest="search", action="store_true", default=None, help="live drift search on")
     p.add_argument("--no-search", dest="search", action="store_false", help="live drift search off")
     p.add_argument("--search-save-every", type=int, help="save every K-th search window (.npy) for checks")
+    p.add_argument("--search-triggers", dest="search_triggers", action="store_true", default=None,
+                   help="live-search hits trigger raw-voltage dumps (observation triggering)")
+    p.add_argument("--no-search-triggers", dest="search_triggers", action="store_false")
     p.add_argument("--ring-seconds", type=float)
     p.add_argument("--dump-seconds", type=float, help="largest raw-voltage dump window")
     p.add_argument("--random-noise", action="store_true", help="synthetic: non-repeating GPU noise (searches)")

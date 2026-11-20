@@ -104,6 +104,12 @@ def patch_dedoppler_rounding() -> bool:
     return True
 
 
+def searcher_for(settings) -> Searcher:
+    """The Searcher for a SearchSettings (lft3.config): what the live and the file search both use."""
+    return Searcher(settings.hyperseti_config(), settings.gulp_channels, settings.flatten_coarse_ripple,
+                    drop_zero_drift=settings.drop_zero_drift)
+
+
 def merge_hits(drift_idx, channel_idx, boxcar, snr):
     """Indices of the hits kept by hyperseti's merge_hits (hits.py), vectorised.
 
@@ -132,7 +138,8 @@ def merge_hits(drift_idx, channel_idx, boxcar, snr):
 class Searcher:
     """hyperseti on windows; keeps its compiled kernels between windows."""
 
-    def __init__(self, hyperseti_config: dict, gulp_channels: int, flatten: bool, gpu_id: int = 0):
+    def __init__(self, hyperseti_config: dict, gulp_channels: int, flatten: bool, gpu_id: int = 0,
+                 drop_zero_drift: bool = False):
         import logging
         import warnings
 
@@ -154,6 +161,10 @@ class Searcher:
         self.config.setdefault("hitsearch", {})["merge_boxcar_trials"] = False
         self.gulp = gulp_channels
         self.flatten = flatten
+        # Hits whose (merged) drift is exactly 0 are stationary, i.e. local RFI. Dropped after merging, so a
+        # stationary signal's weaker off-zero trials, folded into its zero-drift peak, go with it.
+        self.drop_zero_drift = drop_zero_drift
+        self.dropped = 0                  # zero-drift hits dropped by the last search_beam call
         self.kernels = {"dedoppler": DedopplerMan(), "blank_hits": BlankHitsMan(), "peak_find": PeakFinderMan(),
                         "smear_corr": SmearCorrMan()}
 
@@ -169,6 +180,7 @@ class Searcher:
         n_time, n_chan = data.shape
         gulp = min(self.gulp, n_chan)
         hits = []
+        self.dropped = 0
         tstart_mjd = w.start_unix / 86400.0 + 40587.0
         for c0 in range(0, n_chan, gulp):
             c1 = min(n_chan, c0 + gulp)
@@ -193,6 +205,9 @@ class Searcher:
                              tab["snr"].to_numpy()) if self.merge else range(len(tab))
             f, dr, sn, ch = (tab[k].to_numpy() for k in ("f_start", "drift_rate", "snr", "channel_idx"))
             for i in idx:
+                if self.drop_zero_drift and dr[i] == 0:
+                    self.dropped += 1
+                    continue
                 hits.append({"f_start_mhz": float(f[i]), "drift_rate_hz_s": float(dr[i]), "snr": float(sn[i]),
                              "channel": c0 + int(ch[i]), "boxcar_size": int(box[i])})
         hits.sort(key=lambda h: -h["snr"])

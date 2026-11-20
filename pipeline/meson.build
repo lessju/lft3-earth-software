@@ -79,14 +79,16 @@ capture_lib = static_library(
 )
 capture_dep = declare_dependency(link_with: capture_lib, dependencies: [common_dep, daqiri_dep])
 
+zlib_dep = dependency('zlib')
 spec_lib = static_library(
     'lft3_spectrometer',
     ['src/spectrometer/finespec.cu', 'src/spectrometer/fbh5_file.cc'],
     include_directories: inc,
-    dependencies: [cuda_dep, hdf5_dep, h5dsc99_dep, filterbankc99_dep],
+    dependencies: [cuda_dep, hdf5_dep, h5dsc99_dep, filterbankc99_dep, zlib_dep],
     cuda_args: cuda_arch_args,
 )
-spec_dep = declare_dependency(link_with: spec_lib, dependencies: [common_dep, hdf5_dep, h5dsc99_dep, filterbankc99_dep])
+spec_dep = declare_dependency(link_with: spec_lib, dependencies: [common_dep, hdf5_dep, h5dsc99_dep, filterbankc99_dep,
+                                                                   zlib_dep])
 
 dump_lib = static_library('lft3_dump', ['src/dump/guppi.cc'], include_directories: inc)
 dump_dep = declare_dependency(link_with: dump_lib, dependencies: [common_dep])

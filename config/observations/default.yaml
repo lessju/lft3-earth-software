@@ -28,6 +28,8 @@ search:
   window_step_spectra: 32           # 32 of 64: windows overlap by half; a hit is reported <= ~64 s after the fact
   max_drift_hz_s: 200.0
   snr_threshold: 20.0
+  drop_zero_drift: true             # drop hits whose drift is 0 after merging (stationary = local RFI); a
+                                    # signal crossing < 1 channel per window (< 18.6 Hz/s here) is dropped too
   dedoppler_plan: optimal           # every trial in +-max_drift (hyperseti "stepped" adds trials beyond it on short
                                     # windows; at Hz resolution use stepped: far fewer trials, docs/sizing.md)
   flatten_coarse_ripple: true       # divide by the 152.6 kHz channel response before searching
@@ -37,6 +39,19 @@ search:
   max_missing_fraction: 0.01        # skip a window whose spectra miss more than this fraction of packets
   ring_spectra: 64                  # spectra kept in GPU memory to absorb search lag (6.3 MB each per link)
   hyperseti: {}                     # optional raw overrides of the hyperseti config (preprocess/dedoppler/...)
+
+triggering:
+  # Live-search hits that trigger a raw-voltage dump of the stream (lft3-dump), logged to <data_dir>/triggers.log.
+  # The dump covers the moment the hit is found (the voltage ring holds ~2 s; the window's own voltages are gone),
+  # so it catches signals that persist. Tested 2026-11-20, off until the hit rules are agreed.
+  enabled: false
+  min_snr: 50.0
+  min_abs_drift_hz_s: 0.0           # on top of search.drop_zero_drift
+  skip_rfi_labels: true             # never on hits labelled rfi:... (board spurs, Wi-Fi)
+  single_beam: true                 # not on a hit the other beam of the board also sees (local RFI)
+  min_interval_s: 10.0              # at most one trigger per 10 s per stream
+  pre_s: 0.5
+  post_s: 0.5
 
 dump:
   enabled: true

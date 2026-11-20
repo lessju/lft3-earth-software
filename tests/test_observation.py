@@ -167,3 +167,45 @@ def test_merge_hits_keeps_the_strongest_of_each_cluster():
     # 50 @ (6,101) absorbs (5,100) and (5,103); (9,101) is 3 trials away; (6,200) far away
     assert keep == [1, 3, 4]
     assert merge_hits([], [], [], []) == []
+
+
+def test_triggering_config_and_plan(cfg, tmp_path):
+    obs = load_observation_config("default")
+    assert obs.trigger.enabled is False and obs.search.drop_zero_drift is True
+    assert obs.trigger.min_snr == 50.0 and obs.trigger.min_interval_s == 10.0
+    with pytest.raises(ConfigError, match="needs the live search"):
+        parse_observation_config({"triggering": {"enabled": True}, "dump": {"enabled": False}})
+    with pytest.raises(ConfigError, match="exceeds"):
+        parse_observation_config({"triggering": {"enabled": True, "pre_s": 1.0, "post_s": 1.0}})
+    opts = RunOptions.from_observation(obs, source="synthetic", search_triggers=True)
+    plan = plan_run(cfg, opts, "/data", str(tmp_path / "run"))
+    search = [p for p in plan.processes if p.role == "search"][0]
+    assert _arg(search.argv, "--triggers-log") == "/data/triggers.log"
+    with pytest.raises(ValueError, match="search triggers"):
+        RunOptions.from_observation(obs, search_triggers=True, dump=False).validate()
+
+
+def test_trigger_candidate_rules():
+
+
+    from lft3.config import TriggerSettings
+    from lft3.search.core import Window
+    from lft3.search.live import LiveSearch
+
+    ls = LiveSearch.__new__(LiveSearch)          # only the rule logic, no ring or GPU
+    ls.trigger = TriggerSettings(enabled=True, min_snr=50)
+    w = Window(0, 0, 1500.0, 0.0011920928955078125, 1.0, 1.79e9, 128)
+
+    def hit(ch, snr, drift=20.0, f=1800.0):
+        return {"channel": ch, "snr": snr, "drift_rate_hz_s": drift, "f_start_mhz": f}
+    # beam 0: strong drifting hit; beam 1: same channel -> local RFI, skipped; next best wins
+    per_beam = [[hit(100, 90), hit(500, 60)], [hit(101, 70)]]
+    b, h = ls.trigger_candidate(w, per_beam)
+    assert (b, h["channel"]) == (0, 500)
+    per_beam = [[hit(100, 40)], []]                 # below min_snr
+    assert ls.trigger_candidate(w, per_beam) is None
+    per_beam = [[hit(100, 90, f=1875.0)], []]       # board spur label
+    assert ls.trigger_candidate(w, per_beam) is None
+    ls.trigger = TriggerSettings(enabled=True, min_snr=50, single_beam=False)
+    assert ls.trigger_candidate(w, [[hit(100, 90)], [hit(101, 70)]])[1]["snr"] == 90
+

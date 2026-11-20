@@ -70,6 +70,7 @@ class RunOptions:
     spectra_ring: int = 0                 # spectra slots in GPU memory for the search (0 = no spectra ring)
     observation_file: str = ""            # effective observation config handed to the search
     search_save_every: int = 0            # > 0: the search saves every K-th window to <run_dir>/windows (checks)
+    search_triggers: bool = False         # live-search hits trigger raw-voltage dumps (observation triggering)
 
     @classmethod
     def from_observation(cls, obs: ObservationConfig, **overrides) -> RunOptions:
@@ -80,7 +81,7 @@ class RunOptions:
                    spectra_per_file=sp.spectra_per_file, coarse=sp.coarse_product, dump=obs.dump_enabled,
                    dump_max_s=obs.dump_max_window_s, ring_seconds=obs.ring_seconds, search_live=obs.search.live,
                    spectra_ring=obs.search.ring_spectra if obs.search.live else 0,
-                   observation_file=obs.path or "")
+                   search_triggers=obs.trigger.enabled, observation_file=obs.path or "")
         for k, v in overrides.items():
             if not hasattr(opts, k):
                 raise ValueError(f"unknown run option {k}")
@@ -107,6 +108,8 @@ class RunOptions:
             raise ValueError("lossless (backpressure) is only possible with synthetic or file sources")
         if self.search_live and not 16 <= self.spectra_ring <= 4096:
             raise ValueError("the live search needs a spectra ring of 16..4096 spectra")
+        if self.search_triggers and not (self.search_live and self.dump):
+            raise ValueError("search triggers need the live search and the dump")
         if self.tone_drift_hz_s and not self.random_noise:
             raise ValueError("a drifting tone needs random_noise (the periodic generator repeats every block)")
 
@@ -264,7 +267,8 @@ def plan_run(board: BoardConfig, opts: RunOptions, data_dir: str, run_dir: str, 
             obs_file = str(Path(run_dir) / "observation.yaml")   # written by lft3-pipeline (effective config)
             search = [SEARCH_PYTHON, "-m", "lft3.search.live", "--stream", stream, "--observation", obs_file,
                       "--out", str(Path(data_dir) / "hits" / board.name), "--prefix", prefix,
-                      "--beam-offset", str(lk.beam_offset), "--pid-file", search_pid_file(stream)]
+                      "--beam-offset", str(lk.beam_offset), "--pid-file", search_pid_file(stream),
+                      "--triggers-log", str(Path(data_dir) / "triggers.log")]
             if opts.lossless:
                 search.append("--lossless")
             if opts.search_save_every:

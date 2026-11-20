@@ -10,6 +10,10 @@
 // Both are chunked [1, 1, kChunkChannels] (one spectrum, 64 Ki channels), so a reader that wants a frequency range
 // only decompresses the chunks it covers. /data uses byte shuffle + deflate 1 (float spectra shrink ~1.4x), /mask
 // deflate 4 (all-zero rows shrink ~1000x).
+// The chunks of a spectrum are shuffled and deflated in parallel (compressThreads) and written with
+// H5Dwrite_chunk: the same bytes the HDF5 filter pipeline would produce for each chunk, so every reader decodes
+// them through the dataset's normal filters. One thread doing this inside H5Dwrite managed ~50 MB/s compressed
+// (docs/runtime.md §6, resolution benchmark).
 //   /lft3_timestamp       uint64 [time]   spectrum counter t of the first spectrum in each integration
 //   /lft3_missing_packets uint64 [time]   packets zero-filled within each integration
 //   root attributes lft3_*: NCO, pfb_lsb, layout, time reference, software version
@@ -42,6 +46,7 @@ struct Fbh5Header {
     double zaStart = 0.0;
     std::string rawDataFile;
     int fineChannelsPerCoarse = 0;   // FBH5 "nfpc" (turboSETI uses it to find coarse channels)
+    unsigned compressThreads = 4;    // threads compressing the chunks of one spectrum (0/1: HDF5's own H5Dwrite)
 };
 
 class Fbh5File {
@@ -65,6 +70,13 @@ class Fbh5File {
 
  private:
     bool appendScalar(const char* name, std::uint64_t value, std::string& error);
+    bool writeChunksParallel(const float* spectrum, std::uint64_t row);
+
+    std::uint64_t chunkChannels_ = 0;               // chunk width in channels
+    unsigned compressThreads_ = 0;
+    bool directChunks_ = false;                     // nchans is a whole number of chunks: parallel path
+    std::vector<std::vector<std::uint8_t>> chunkOut_;   // compressed chunks of the current spectrum
+    std::vector<std::uint8_t> zeroMaskChunk_;       // the all-zero mask chunk, compressed once
 
     filterbank_h5_file_t fb_ = {};
     std::vector<std::uint8_t> mask_;

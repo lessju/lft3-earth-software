@@ -54,6 +54,7 @@ const char* kUsage = R"(lft3-spectrometer --stream NAME [options]
   --name NAME --lossless        reader name; lossless: capture waits for this reader (synthetic/file only)
   --attach-timeout S            (default 30)
   --spectra-ring N              also publish every spectrum into the GPU ring <stream>-spectra of N slots
+  --compress-threads N          threads compressing FBH5 chunks per file (default 4; 1 = HDF5's own, serial)
 )";
 
 struct Options {
@@ -61,6 +62,7 @@ struct Options {
     std::uint32_t fftLength = 128, binsPerOutput = 1, beamOffset = 0;
     double integrationS = 1.0, ncoMHz = 0.0, syncTimeUnix = 0.0, attachTimeout = 30.0;
     std::uint64_t integrationBlocks = 0, spectraPerFile = 3600, spectraRing = 0;
+    unsigned compressThreads = 4;
     int telescopeId = 0, machineId = 0;
     bool record = true, lossless = false;
 };
@@ -184,6 +186,7 @@ class Writer {
         h.machineId = o_.machineId;
         h.nbeams = static_cast<int>(Layout::kBeams);
         h.fineChannelsPerCoarse = static_cast<int>(fs.perCoarse >= fs.bins ? fs.perCoarse / fs.bins : 1);
+        h.compressThreads = o_.compressThreads;
         std::map<std::string, double> num = {
             {"lft3_nco_mhz", ncoMHz},
             {"lft3_unix_time_at_t0", t0},
@@ -610,6 +613,7 @@ int main(int argc, char** argv) {
     o.lossless = a.flag("lossless");
     o.attachTimeout = a.f64("attach-timeout", 30.0);
     o.spectraRing = static_cast<std::uint64_t>(a.i64("spectra-ring", 0));
+    o.compressThreads = static_cast<unsigned>(std::max<std::int64_t>(1, a.i64("compress-threads", 4)));
     if (a.has("help") || o.stream.empty() || (o.mode != "fine" && o.mode != "coarse") || o.binsPerOutput == 0 ||
         o.prefix.empty() || o.prefix.find('/') != std::string::npos) {
         std::fputs(kUsage, stderr);
