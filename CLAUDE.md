@@ -233,7 +233,11 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 * Validated (synthetic `--random-noise`: hashed GPU noise + drifting tone, `capture/synth.cu`): live windows
   bit-identical to FBH5, live hits == `lft3-search` file hits; +50 Hz/s → 37/56 Hz/s at S/N 143 (amp 1),
   −120 → −112/−130 at S/N ~36 (amp 0.5), no false hits in the empty beam; 2 % drops → windows skipped;
-  0.38 s per window per 32 s, kept up at 5.5× real time. Live soak: see docs/runtime.md §6.
+  0.38 s per window per 32 s, kept up at 5.5× real time.
+* **1 h live soak (2026-11-20) with the search: 0 loss, `rx_discards_phy` unchanged**, 110/110 windows, 0
+  overruns. Real data: ~3700 hits/window, almost all zero-drift local RFI (Wi-Fi, spurs, other). hyperseti's
+  `merge_hits` took 13.9 s/window → `core.merge_hits` (identical results on soak data, 180× faster, ~0.7 s per
+  beam per window now).
 * The old periodic synthetic generator repeats every block → integrated spectra never fluctuate: useless for
   searches (fixed pattern adds coherently). Use `--random-noise` for anything search-related.
 

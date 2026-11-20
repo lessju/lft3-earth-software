@@ -155,7 +155,15 @@ In the order they were made. Each one is backed by a measurement on this machine
     * 2 % dropped packets → measured missing fraction 2.00 %, every window skipped and logged;
     * cost: 0.38 s per window (both beams) per 32 s step, ~1.2 % duty; at 5.5× real time (`--fast`) it kept up
       with lag 0; hits are written ≈ 0.5 s after a window's last spectrum;
-    * live soak on the board: see §6.
+    * **1 h live soak on the board** (2026-11-20 08:18–09:18 UTC, default observation, search on): 3.3×10⁹
+      packets, 0 missing, 0 partial/skipped blocks, DAQIRI 0 fillers/errors, **`rx_discards_phy` unchanged**
+      (284 before and after: the search costs no packets at the NIC, unlike the file search of decision 13),
+      110/110 windows searched, 0 overruns. That run still used hyperseti's hit merge: 13.9 s median, 16.6 s
+      max per window (budget 32 s). Real data gives ~3700 hits per window (407 k in the hour): 72 k Wi-Fi,
+      1.5 k board spurs, 333 k other, of which only 200 have non-zero drift, i.e. stationary local RFI;
+    * hyperseti's `merge_hits` (one pandas query per hit) was the cost: replaced by `core.merge_hits`, same
+      greedy rule, **identical merged hits** in 25 gulps of soak data (8055 raw hits), 0.047 s instead of
+      8.6 s; a real window now takes ~0.7 s per beam (~4 % of the step).
 
 ## 3. Code map
 
@@ -410,7 +418,9 @@ NIC itself drop packets before any of our code sees them. Leave headroom on the 
 * **Hz resolution** (Nf = 2^16–2^17): a fused path (cuFFT with load/store callbacks, or a custom kernel), gathering
   64–128 blocks per channel row (232 GB/s measured gather); ring ≥ 2 × FFT length (12.9 GB at 2^17). Unmodified
   rawspec is too slow on GB10 (decision 14). Decide the band and output volume first (`docs/architecture.md`).
-* **Searches**: live search on the spectra ring done (decisions 16–18). Next: hits → triggers (GPU narrowband
+* **Searches**: live search on the spectra ring done (decisions 16–18). Next: a zero-drift / stationary-RFI
+  filter (99.9 % of the unlabelled live hits have drift 0; SETI searches usually exclude |drift| below one
+  step), hits → triggers (GPU narrowband
   trigger into `lft3-dump`), cross-window/cross-beam hit clustering and RFI rejection, report the hyperseti
   kernel issue upstream, heimdall from coarse detection. At Hz resolution the search window holds
   2^20 channels per beam and costs ~2 GB10 per stream (docs/sizing.md).
