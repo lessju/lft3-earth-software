@@ -413,11 +413,47 @@ NIC itself drop packets before any of our code sees them. Leave headroom on the 
   resolution for all 6 streams needs subbands (only part of the band at Hz resolution), more GPUs, or a
   dedicated search cluster fed with voltages.
 
+### Resolution and integration benchmark (2026-11-20, `pipeline/bench/resolution/resolution.py`)
+
+One synthetic stream (random GPU noise + a 50 Hz/s tone), live search on (64 spectra every 32, ±200 Hz/s),
+`--fast --lossless`: the chain runs as fast as its slowest stage, so the speed is the stream's capacity in units of
+real time (≥ 1 keeps up). Raw results: `docs/system_overview/data/resolution_bench.json`.
+
+| Fine channels (width) | Integration | Whole chain, writing FBH5 | Not writing | Search alone, idle GPU | Tone S/N |
+|---|---|---|---|---|---|
+| 128 (1192 Hz) | 1 / 0.5 / 0.25 / 0.1 s | 5.3 / 5.1 / 3.1 / 1.1× | 5.3 / 5.1 / 4.8 / 3.2× | 106 / 61 / 31 / 13× | 144 / 92 / 77 / 53 |
+| 256 (596 Hz) | same | 4.8 / 3.1 / 1.5 / 0.56× | 4.8 / 4.6 / 4.2 / 3.0× | | 198 / 144 / 100 / 68 |
+| 512 (298 Hz) | same | 3.1 / 1.5 / 0.70 / 0.28× | 3.4 / 3.3 / 3.0 / 1.8× | | 280 / 197 / 142 / 89 |
+| 1024 (149 Hz) | same | 1.5 / 0.73 / 0.33 / 0.14× | 2.4 / 2.3 / 2.1 / 1.07× | 7.3 / 5.3 / 3.1 / 1.5× | 363 / 275 / 187 / 126 |
+
+* **Writing FBH5 is the bottleneck.** Speed × output rate is ~50 MB/s (compressed) in every recording run: the
+  single writer thread doing shuffle + deflate per 64 Ki-channel chunk. Recording keeps real time while the raw
+  fine product stays below ~70 MB/s, i.e. fine channels per board channel / integration time ≲ 1500 s⁻¹
+  (128 at 0.1 s just passes, 1024 at 0.5 s does not). Without writing, every tested combination keeps up.
+  Fix before using shorter integrations or finer channels: compress chunks in parallel (they are independent;
+  write them with `H5Dwrite_chunk`), or write the fine product at a slower cadence than the search sees.
+* **The search** costs, per 2^17-channel gulp of 64 spectra, a floor of ~21 ms (normalisation, peak finding,
+  Python) plus ~0.15 ms per drift trial (trials = 2 × max drift × window length / channel width + 1). Shorter
+  integrations mean fewer trials per window but more windows per second, so the cost per second still rises; finer
+  channels raise both channels and trials. In the matrix the search shares the GPU with a spectrometer running at
+  2–5× real time, so its own headroom there is lower than the idle-GPU column.
+* **Toward Hz resolution** (search alone, ±4 Hz/s as in docs/sizing.md, 1 s spectra, 64-spectrum windows):
+  18.6 Hz 1.7×, 2.33 Hz 0.11×, 1.16 Hz 0.03× real time, i.e. ~30 GB10 per stream at 1 s spectra. The floor alone
+  exceeds real time from ~2^13 fine channels with 1 s spectra, so Hz resolution needs longer integrations (the
+  sizing assumes 10 s) and the `stepped` plan (the `optimal` plan's trial count grows with window length × drift
+  range: ~2200 trials for 32 × 10 s at ±4 Hz/s, against 383 stepped).
+* **Sensitivity** follows the radiometer equation: tone S/N ∝ √(fine channels per board channel × window
+  duration).
+* **Drift estimate**: within one trial step when the signal crosses several channels per window; when it crosses
+  only about one channel (drift ≈ 1–1.4 steps) a window sometimes reports one step lower (often 0).
+
 ## 7. Open items and next steps
 
 * **Hz resolution** (Nf = 2^16–2^17): a fused path (cuFFT with load/store callbacks, or a custom kernel), gathering
   64–128 blocks per channel row (232 GB/s measured gather); ring ≥ 2 × FFT length (12.9 GB at 2^17). Unmodified
   rawspec is too slow on GB10 (decision 14). Decide the band and output volume first (`docs/architecture.md`).
+* **FBH5 writer throughput** (~50 MB/s compressed, one thread) limits recording at short integrations or finer
+  channels (§6, resolution benchmark): parallel chunk compression.
 * **Searches**: live search on the spectra ring done (decisions 16–18). Next: a zero-drift / stationary-RFI
   filter (99.9 % of the unlabelled live hits have drift 0; SETI searches usually exclude |drift| below one
   step), hits → triggers (GPU narrowband

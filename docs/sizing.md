@@ -77,6 +77,15 @@ injected 0.05 Hz/s tone in every run.
   item**: about 3× the Hz channeliser.
 * At the interim 1.2 kHz resolution the search is negligible: about 1000× fewer channels.
 
+### Live search cost against resolution (measured 2026-11-20, `pipeline/bench/resolution/resolution.py`)
+
+The live search (`lft3.search.core`, hyperseti with the `optimal` plan) on one 2^17-channel gulp of 64 spectra,
+idle GB10, scaled to a full-band stream: per gulp ~21 ms floor + ~0.15 ms per drift trial. Real-time factors with
+1 s spectra: 1192 Hz 106×, 149 Hz 7.3×, 18.6 Hz 1.7×, 2.33 Hz 0.11×, 1.16 Hz 0.03× (the last three at ±4 Hz/s).
+At 1.16 Hz and 1 s spectra that is ~30 GB10 per stream, so the figures above (10 s spectra, 32-spectrum windows,
+`stepped` plan) remain the planning basis; the `optimal` plan the 1.2 kHz configuration uses would cost ~6× more
+trials there. Details and the whole-chain matrix: docs/runtime.md §6.
+
 ## 4. Station totals and GPU count
 
 Totals: 5 UHF streams plus the VHF stream at half processing (its padded inputs are skipped). Plan for **≤ 70 %**

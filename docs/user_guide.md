@@ -91,6 +91,15 @@ dump: {enabled: true, max_window_s: 1.0}
 ring: {seconds: 2.0}
 ```
 
+Choosing resolution and integration (one stream on the Spark, measured; docs/runtime.md §6):
+
+* Everything keeps real time up to 1024 fine channels (149 Hz) at 1 s, or 128 (1.19 kHz) at 0.1 s, **while
+  recording**: the FBH5 writer manages ~50 MB/s, so keep fine channels per board channel / integration time
+  below ~1500 per second. Without recording (`record_fine: false`) everything up to 1024 at 0.1 s keeps up.
+* Search sensitivity grows as √(fine channels × window duration); the drift step is channel width / window length.
+* More than 1024 fine channels needs the Hz-resolution path (not built yet) and, for the search, longer
+  integrations and `dedoppler_plan: stepped`.
+
 Another observation: copy the file, then `lft3-pipeline run --observation NAME`. Options such as
 `--fft-length`, `--integration`, `--no-search` override single values for one run. The run directory gets the
 effective `observation.yaml`. Invalid combinations are refused at start (for example a drift range that never

@@ -28,7 +28,8 @@ search:
   window_step_spectra: 32           # 32 of 64: windows overlap by half; a hit is reported <= ~64 s after the fact
   max_drift_hz_s: 200.0
   snr_threshold: 20.0
-  dedoppler_plan: optimal           # every trial in +-max_drift (hyperseti "stepped" adds trials beyond it)
+  dedoppler_plan: optimal           # every trial in +-max_drift (hyperseti "stepped" adds trials beyond it on short
+                                    # windows; at Hz resolution use stepped: far fewer trials, docs/sizing.md)
   flatten_coarse_ripple: true       # divide by the 152.6 kHz channel response before searching
   sk_flag: false                    # hyperseti spectral kurtosis flagging (flags 100 % of our data; see lft3-search)
   blank_edge_channels: 8            # hyperseti blank_edges per gulp

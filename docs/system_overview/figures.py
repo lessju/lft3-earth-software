@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -96,16 +97,18 @@ def system_overview(out):
     ax.text(30.5, 44, "100 GbE", fontsize=7.5, color="#555", rotation=44)
     arrow(ax, 53, 48.5, 58, 48.5, lw=2)
     arrow(ax, 76, 48.5, 81, 48.5, lw=2)
-    readers = [("spectrometer", 52), ("dump", 70.5), ("other readers", 89)]
-    for name, x in readers:
+    for name, x in (("spectrometer", 52), ("dump", 89)):
         box(ax, x, 26, 16, 7, name, "reader")
         arrow(ax, 93.5, 42, x + 8, 33)
+    box(ax, 70.5, 26, 16, 7, "live search", "reader")
+    arrow(ax, 68, 29.5, 70.5, 29.5, lw=1.2)
     box(ax, 40, 7, 15, 9, "FBH5\nspectra", "store")
-    box(ax, 59, 7, 15, 9, "GUPPI RAW\ndumps", "store")
-    box(ax, 78, 7, 13, 9, "search\nhits", "store")
-    box(ax, 94, 7, 13, 9, "viewer", "reader")
+    box(ax, 59, 7, 15, 9, "search\nhits", "store")
+    box(ax, 78, 7, 15, 9, "GUPPI RAW\ndumps", "store")
+    box(ax, 96, 7, 11, 9, "viewer", "reader")
     arrow(ax, 60, 26, 48, 16)
     arrow(ax, 78.5, 26, 67, 16)
+    arrow(ax, 97, 26, 86, 16)
     arrow(ax, 28, 8, 35, 8, ls=":", lw=1)
     save(f, out, "f01_system")
 
@@ -462,6 +465,29 @@ def viewer(out):
 
 # ------------------------------------------------------------------------------------------------ charts
 
+def live_search(out):
+    f, ax = fig(11, 4.6)
+    box(ax, 1, 33, 20, 9, "lft3-spectrometer\n1 s fine spectrum\n(accumulator)", "reader", fs=8)
+    box(ax, 27, 33, 25, 9, "spectra ring\n64 × 6.3 MB (GPU)", "gpu", fs=8)
+    arrow(ax, 21, 37.5, 27, 37.5, "device copy", off=(0, 0.6))
+    box(ax, 1, 20, 20, 8, "FBH5 files\n(same spectra)", "store", fs=8)
+    arrow(ax, 11, 33, 11, 28)
+    group(ax, 57, 15, 52, 30, "live search (host, search venv)", "reader", fs=8.5)
+    box(ax, 59, 33, 22, 7, "window buffer\nlast 64 spectra", "gpu", fs=8)
+    arrow(ax, 52, 37.5, 59, 37.5)
+    box(ax, 85, 33, 22, 7, "every 32 spectra:\nwindow k", "reader", fs=8)
+    arrow(ax, 81, 36.5, 85, 36.5)
+    box(ax, 59, 17.5, 48, 12, "per beam, per 2^17 channels:\nflatten coarse ripple → normalise → dedoppler\n"
+                              "(±200 Hz/s, rounded shifts) → hit search → merge", "gpu", fs=7.8)
+    arrow(ax, 96, 33, 96, 29.5)
+    box(ax, 59, 2, 24, 8, "hits CSV\n+ windows JSONL", "store", fs=8)
+    arrow(ax, 71, 17.5, 71, 10)
+    box(ax, 1, 2, 38, 9, "lft3-search on files:\nsame windows, same search code", "reader", fs=8)
+    arrow(ax, 11, 20, 11, 11)
+    arrow(ax, 39, 6, 59, 6, "identical hits", ls=":", off=(0, 0.5))
+    save(f, out, "f17_live_search")
+
+
 def chart_kernels(out):
     f, ax = plt.subplots(figsize=(7.2, 2.6))
     names = ["scatter (capture)", "fine FFT, shared-mem kernel", "fine FFT, warp kernel", "coarse power (old reader)"]
@@ -535,6 +561,61 @@ def chart_memory(out):
     ax.spines[["top", "right"]].set_visible(False)
     f.tight_layout()
     save(f, out, "c4_memory")
+
+
+def chart_resolution(out):
+    """Resolution benchmark (pipeline/bench/resolution, results copied to data/resolution_bench.json)."""
+    import json
+
+    d = json.loads((Path(__file__).resolve().parent / "data" / "resolution_bench.json").read_text())
+    rows = [r for r in d["matrix"] if "speed_x_real_time" in r]
+    tints = sorted({r["integration_s"] for r in rows}, reverse=True)
+    nfs = sorted({r["nf"] for r in rows})
+    f, axes = plt.subplots(1, 3, figsize=(10.5, 3.3))
+    cols = {1.0: "#2e8b3a", 0.5: "#1f8a83", 0.25: "#2f6db0", 0.1: "#6b3fa0"}
+    norec = [r for r in d.get("matrix_no_record", []) if "speed_x_real_time" in r]
+    for data, ax, title in ((rows, axes[0], "(a) whole chain, writing FBH5"),
+                            (norec, axes[1], "(b) whole chain, not writing")):
+        key = "speed_x_real_time"
+        for t in tints:
+            pts = sorted((r["nf"], r[key]) for r in data if r["integration_s"] == t and r.get(key))
+            if pts:
+                ax.plot([p[0] for p in pts], [p[1] for p in pts], "o-", color=cols.get(t, "#333"), label=f"{t:g} s")
+        ax.axhline(1, color="#b03a2e", ls="--", lw=1)
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.set_xticks(nfs, [f"{n}\n{152587.890625 / n:.0f} Hz" for n in nfs])
+        ax.set_title(title, fontsize=8.5, loc="left")
+        ax.set_ylabel("× real time (≥ 1 keeps up)", fontsize=8)
+        ax.set_xlabel("fine channels per board channel", fontsize=8)
+    axes[0].legend(title="integration", fontsize=7, title_fontsize=7, frameon=False)
+    so = [r for r in d.get("search_only", []) if "search_capacity_x" in r]
+    ax = axes[2]
+    for t in tints:
+        pts = sorted((r["nf"], r["search_capacity_x"]) for r in so if r["integration_s"] == t)
+        if pts:
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], "o-", color=cols.get(t, "#333"), label=f"{t:g} s")
+    ax.axhline(1, color="#b03a2e", ls="--", lw=1)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    xs = sorted({r["nf"] for r in so})
+    widths = [152587.890625 / n for n in xs]
+    ax.set_xticks(xs, [f"{w / 1e3:.3g} kHz" if w >= 1000 else f"{w:.3g} Hz" for w in widths], fontsize=7,
+                  rotation=35)
+    ax.axvspan(1500, max(xs) * 1.3, color="#eeeeee", zorder=0)
+    ax.text(1700, 60, "±4 Hz/s\n(Hz-resolution\nsearch)", fontsize=6.5, color="#555", va="top")
+    ax.text(140, 0.03, "±200 Hz/s", fontsize=6.5, color="#555")
+    ax.set_title("(c) live search alone, idle GPU", fontsize=8.5, loc="left")
+    ax.set_xlabel("fine channel width", fontsize=8)
+    from matplotlib.ticker import FuncFormatter, NullFormatter
+    for a in axes:
+        a.set_ylim(0.02, 200)
+        a.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+        a.yaxis.set_minor_formatter(NullFormatter())
+        a.tick_params(labelsize=7)
+        a.spines[["top", "right"]].set_visible(False)
+    f.tight_layout()
+    save(f, out, "c8_resolution")
 
 
 def _sizing_model():
@@ -656,8 +737,8 @@ def chart_spectra(out):
 
 
 ALL = [system_overview, signal_chain, packet_layout, freq_map, spark_hw, data_movement, packet_lifetime, assembler,
-       scatter, ring, finespec, warp_fft, dump, processes, bringup, viewer, chart_kernels, chart_capacity,
-       chart_rawspec, chart_memory, chart_spectra, chart_sizing_cost, chart_sizing_gpus]
+       scatter, ring, finespec, warp_fft, dump, processes, bringup, viewer, live_search, chart_kernels, chart_capacity,
+       chart_rawspec, chart_memory, chart_spectra, chart_sizing_cost, chart_sizing_gpus, chart_resolution]
 
 if __name__ == "__main__":
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "figures")

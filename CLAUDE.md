@@ -238,6 +238,10 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
   overruns. Real data: ~3700 hits/window, almost all zero-drift local RFI (Wi-Fi, spurs, other). hyperseti's
   `merge_hits` took 13.9 s/window → `core.merge_hits` (identical results on soak data, 180× faster, ~0.7 s per
   beam per window now).
+* **Resolution benchmark (2026-11-20, pipeline/bench/resolution):** one stream keeps real time while recording
+  up to Nf 1024 @ 1 s or Nf 128 @ 0.1 s; the limit is the single-thread FBH5 writer (~50 MB/s compressed). Without
+  recording everything up to Nf 1024 @ 0.1 s keeps up. Search per 2^17-ch gulp of 64 spectra: ~21 ms + 0.15 ms per
+  drift trial; at 1.16 Hz with 1 s spectra ~30 GB10/stream → Hz needs 10 s spectra + stepped plan (sizing basis).
 * The old periodic synthetic generator repeats every block → integrated spectra never fluctuate: useless for
   searches (fixed pattern adds coherently). Use `--random-noise` for anything search-related.
 

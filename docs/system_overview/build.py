@@ -26,8 +26,8 @@ from svglib.svglib import svg2rlg
 HERE = Path(__file__).resolve().parent
 FIG = HERE / "figures"
 OUT = HERE / "lft3_system_overview.pdf"
-VERSION = "1.1"
-DATE = dt.date(2026, 11, 16).strftime("%d %B %Y")
+VERSION = "1.2"
+DATE = dt.date(2026, 11, 20).strftime("%d %B %Y")
 
 # ---------------------------------------------------------------------------------------------- fonts, styles
 FONTS = {"Sans": "DejaVuSans.ttf", "Sans-Bold": "DejaVuSans-Bold.ttf", "Sans-Oblique": "DejaVuSans-Oblique.ttf",
@@ -276,7 +276,8 @@ def cover():
     meta = [["Scope", "One RFSoC 4x2 board streaming to one NVIDIA DGX Spark, and the sizing of the full station: "
                       "6 boards with one 100 GbE link each"],
             ["State", "Implemented and running live at 60.8 Gb/s; 2-hour soak without loss of the system's own "
-                      "making. Production hardware sized, not yet bought"],
+                      "making; live drift search on the GPU spectra, 1-hour soak without loss. Production hardware "
+                      "sized, not yet bought"],
             ["Version", f"{VERSION} · {DATE}"]]
     t = Table([[Paragraph(a, S["cellb"]), Paragraph(b, S["cell"])] for a, b in meta],
               colWidths=[2.6 * cm, A4[0] - 4.2 * cm - 2.6 * cm], hAlign="LEFT")
@@ -307,7 +308,12 @@ def content():
       "independent readers process them at their own pace: today the 1.2 kHz spectrometer and the raw-voltage dump. "
       "A slow or crashed reader cannot cause data loss.",
       "Spectra are written in the Breakthrough Listen formats and open with the community tools. A browser viewer "
-      "shows hour-long files interactively, and a hyperseti drift search runs on finished files.",
+      "shows hour-long files interactively.",
+      "A <b>live narrowband drift search</b> (hyperseti) reads the spectra straight from GPU memory while the run "
+      "goes on, and reports hits within a second of each 64-second window. A one-hour soak with the search running "
+      "lost no packets. Its results are identical to searching the same spectra from files.",
+      "One observation configuration file sets the resolution, integration time, products and search for runs and "
+      "searches alike.",
       "The frequency axis and its sign are confirmed by the board's own clock spurs and by an injected test tone.")
     H3("What the full station needs")
     B("Every processing stage is limited by memory bandwidth, not arithmetic. This makes the cost of the full "
@@ -338,7 +344,7 @@ def content():
       "who need to understand, operate, debug or extend the system. It covers what each part does, how data moves "
       "through memory, which algorithms are used, and why they were chosen. Where to find each part in the "
       "repository, and the documents with more detail, are listed in the appendix.")
-    P("All numbers were measured on the system itself, a DGX Spark with the GB10 chip, between 12 and 14 November "
+    P("All numbers were measured on the system itself, a DGX Spark with the GB10 chip, between 12 and 20 November "
       "2026, unless stated otherwise. Program names are set in " + mono("monospace") + ". In the diagrams, colour "
       "shows where something runs: orange is the board and FPGA, grey the network, blue the host CPU, green the GPU "
       "and its memory, purple storage, and teal the reader processes. Diagrams are kept sparse; the text around them "
@@ -356,6 +362,8 @@ def content():
            ["Time base", "t counts spectra (6.5536 µs each) since the last board sync; blocks of 1024 spectra "
                          "(6.71 ms)"],
            ["Products", "fine and coarse FBH5 spectra, GUPPI RAW voltage dumps on trigger, hyperseti hits"],
+           ["Live search", "hyperseti on the last 64 spectra every 32 s, from GPU memory; drift ±200 Hz/s in "
+                           "18.6 Hz/s steps; S/N ≥ 20"],
            ["Capacity of one Spark", "2 boards with headroom; compute for up to 5; at Hz resolution about 1"],
            ["Station sizing", "at 1.16 Hz with the drift search: one RTX PRO 6000 GPU per board, 3 servers of "
                               "2 boards"]],
@@ -364,21 +372,25 @@ def content():
     # ------------------------------------------------------------------------------------------------ 2
     H1("The system at a glance")
     FIGURE("f01_system", "The whole system for one board. Thick arrows carry the 60.8 Gb/s data stream; the dotted "
-                         "arrow is control. The full station has six boards, each with one 100 GbE link.")
+                         "arrow is control. The spectrometer hands its spectra to the live search in GPU memory. The full station has six boards, each with one 100 GbE link.")
     P("The system has three layers, kept deliberately independent:")
     B("<b>The board</b> does the hard real-time work at 5 GSPS: sampling, down-conversion, the coarse polyphase "
       "filterbank and packetising. The host controls and monitors it over the management network with "
       + mono("lft3-board") + ".",
       "<b>The real-time runtime</b> on the host receives the stream at line rate. Its one rule: <i>the receiver never "
       "waits for anything downstream</i>. It writes every 6.71 ms block of voltages into a ring in GPU memory. Any "
-      "number of reader processes read the ring at their own pace: the spectrometer, the dump process, and in future "
-      "the searches.",
+      "number of reader processes read the ring at their own pace: the spectrometer and the dump process. The "
+      "spectrometer passes its spectra on to the live search through a second, much smaller ring.",
       "<b>Products and tools</b> work on files: FBH5 spectra, GUPPI RAW dumps, search hits, the browser viewer "
       + mono("lft3-view") + ", plots, and the " + mono("lft3-pipeline") + " orchestrator that starts, watches and "
       "stops everything.")
-    P("Configuration lives in git and is the single source of truth. A station file lists the boards and the data "
-      "directory. One file per board describes its bitstream, clocks, NCO, input mapping, network addresses, the "
-      "host-side link with its CPU cores, and timing.")
+    P("Configuration lives in git and is the single source of truth. A station file lists the boards, the data "
+      "directory and the observation in use. One file per board describes its bitstream, clocks, NCO, input "
+      "mapping, network addresses, the host-side link with its CPU cores, and timing. One file per "
+      "<b>observation</b> describes how the data is processed: fine channels per board channel (or the resolution in "
+      "Hz), integration time, channel range, which products to write, the search window, drift range and S/N "
+      "threshold, and the dump and ring sizes. Command-line options change single values for one run, and each run "
+      "keeps a copy of the configuration it actually used.")
 
     # ------------------------------------------------------------------------------------------------ 3
     H1("The RFSoC board")
@@ -743,7 +755,8 @@ def content():
            ["Latest snapshot", "the newest coarse spectrum per beam with its axes, for dashboards"],
            ["Raw voltages", "GUPPI RAW, 6144 channels × 2 polarisations × 8-bit complex, 6.5536 µs samples, "
                             "with a JSON description"],
-           ["Search hits", "frequency, drift rate, S/N, channel, RFI label, observation id, stream"],
+           ["Search hits", "per window: window start, beam, frequency, drift rate, S/N, channel, RFI label, "
+                           "observation id, stream; plus one record per window (searched or why not, time taken)"],
            ["Run records", "one log per process, the run plan, a status time series and NIC counters"]],
           [0.18, 0.82], "Products. Their locations on disk are listed in the appendix.")
     BG("FBH5", "Filterbank data in HDF5, the Breakthrough Listen format for spectra: a 3-D dataset [time, "
@@ -794,44 +807,80 @@ def content():
 
     # ------------------------------------------------------------------------------------------------ 8
     H1("Searching for narrowband signals")
-    P(mono("lft3-search") + " runs hyperseti, Breakthrough Listen's GPU drift-rate search, on finished fine FBH5 "
-      "files. It runs in its own Python environment with CuPy and a tested hyperseti version. Files that are still "
-      "being written are never opened: a file counts as finished once the next file of the same beam exists or it "
-      "has been idle for two minutes. The defaults are adapted to 1.19 kHz channels:")
     BG("drift rate and dedoppler search", "A transmitter on a rotating planet, received by a rotating Earth, is "
        "Doppler shifted by an amount that changes slowly with time, so a narrowband signal appears as a slanted line "
        "in a time–frequency plot. Its slope, in Hz/s, is the <i>drift rate</i>. A <i>dedoppler</i> search sums the "
        "power along straight lines of many trial slopes and reports lines whose summed power stands out from the "
        "noise by more than a threshold signal-to-noise ratio (S/N). Terrestrial interference usually has zero drift "
        "or an erratic one.")
-    BG("spectral kurtosis", "A statistic that compares the variance of a channel's power with what pure Gaussian noise "
-       "would give for the number of samples summed. Impulsive or switching interference makes it deviate, so it is a "
-       "cheap way to flag RFI. It only works if the number of summed samples is known exactly.")
-    B("no spectral-kurtosis flagging: hyperseti would otherwise flag all of the data, because its assumed "
-      "accumulation count does not include the sum of two polarisations;",
-      "drift rates up to 200 Hz/s: at 10 Hz/s a signal would not cross even one 1.19 kHz channel within a file, and "
-      "there would be no drift trials;",
-      "S/N threshold 20. Hits within two fine channels of a 125 MHz board spur, or in the Spark's Wi-Fi channel 1, "
-      "are labelled as RFI but kept.")
-    P("On live data the strongest hits are exactly the board's spur comb at 1750, 1875, 2125, 2250 and 2375 MHz, "
-      "correctly labelled. A 70-second file of one beam takes about 2.5 s. A live search would read spectra from a "
-      "ring, with the same mechanism the Python ring module already demonstrates with CuPy. How much a search costs "
-      "at Hz resolution is measured in §11.")
-    N("<b>Important.</b> A search running on the Spark during a live capture once made the NIC drop 277 packets. The "
-      "search loaded the shared memory bus enough that the NIC's own buffer overflowed; the runtime itself was "
-      "unaffected. On the Spark, heavy GPU or memory jobs on the capture host must be throttled or run elsewhere "
-      "(§10). Servers with discrete GPUs do not share this bus (§11).")
+    P("The search uses hyperseti, Breakthrough Listen's GPU drift-rate search, in its own Python environment with "
+      "CuPy. It runs <b>live</b>, during the run, on spectra that never leave GPU memory:")
+    FIGURE("f17_live_search", "The live search. The spectrometer copies each 1-second spectrum into a small ring in "
+                              "GPU memory; the search keeps the last 64 and searches them every 32. The file search "
+                              "runs the same code on the same windows.")
+    B("The spectrometer already holds every integrated spectrum on the GPU. It now also copies it, device to device, "
+      "into a <b>spectra ring</b> of 64 slots of 6.3 MB, built exactly like the voltage ring, with the same "
+      "never-wait rule.",
+      "The search process registers as a reader of that ring, copies each new spectrum once into its own buffer of "
+      "the last 64, and searches a window every 32 spectra. The windows sit on a fixed grid of absolute spectrum "
+      "numbers, like the integrations, so every board and every rerun agrees on them.",
+      "Per beam and per 2<super>17</super> channels it divides out the coarse-channel response, then hyperseti "
+      "normalises, sums along every drift trial within ±200 Hz/s, and keeps peaks above S/N 20. Hits near the "
+      "board's 125 MHz spurs or in the Spark's Wi-Fi channel are labelled as RFI but kept.",
+      "A gap in the data restarts the window; a window missing more than 1 % of its packets is skipped and the "
+      "reason recorded. Hits go to a CSV file, and a second file records every window: searched or not, hits, time "
+      "taken and latency.",
+      mono("lft3-pipeline") + " starts and stops the search with the run and shows its lag and window count. If "
+      "the search fails, the run continues without it.")
+    P("Why live from GPU memory: the earlier search on finished files read, decompressed and copied gigabyte files "
+      "to the GPU in bursts, and once made the NIC drop 277 packets by loading the shared memory bus (§10). The live "
+      "search moves each spectrum across the bus once more, 6.3 MB per second, and costs no packets.")
+    H2("Making hyperseti work on short windows")
+    P("hyperseti was written for files of many minutes. Testing it on one-minute windows with synthetic drifting "
+      "tones found three problems, all fixed in our code without changing hyperseti itself:")
+    B("<b>Truncated shifts.</b> The dedoppler kernel shifts spectrum <i>t</i> of drift trial <i>d</i> by "
+      "<i>d·t/T</i> channels in integer arithmetic, rounding toward zero. Over long files this is invisible. Over 16 "
+      "spectra the ±1 trials never shift any spectrum, so they equal zero drift, and a stationary tone was reported "
+      "at −74.5 Hz/s. The search recompiles the same kernel with the shift rounded.",
+      "<b>Trials beyond the limit.</b> hyperseti's default plan, 'stepped', starts with as many trials as there are "
+      "spectra, which on short windows reaches far past the requested ±200 Hz/s and produced ghost hits at "
+      "400–600 Hz/s. The 'optimal' plan, every trial within the limit, is used instead.",
+      "<b>Slow merging.</b> Merging neighbouring hits ran one database-style query per hit: 13.9 s for a window of "
+      "live data with 3700 hits. A vectorised version with the same rule gives identical results on live data in "
+      "under 0.05 s.")
+    P("The window length sets the drift resolution: one channel width divided by the window, 1192 Hz / 64 s = "
+      "18.6 Hz/s. With 16-spectrum windows a drift moves a signal by only two or three channels and the measured "
+      "rate was good to ±75 Hz/s; with 64 spectra injected drifts are recovered to within one step.")
+    H2("Validation")
+    TABLE([["Test", "Result"],
+           ["Live windows against FBH5", "all windows of a synthetic run bit-identical to the same rows of the files, "
+                                         "both beams"],
+           ["Live hits against file search", "identical hit lists: frequency, drift, S/N and channel"],
+           ["Tone at +50 Hz/s, amplitude 1", "one hit per window at 37.3 or 55.9 Hz/s (the neighbouring trials), "
+                                             "S/N 143, on the injected frequency track"],
+           ["Tone at −120 Hz/s, amplitude 0.5", "−111.8 or −130.4 Hz/s, S/N 33–38 against the expected 36"],
+           ["Beam without a tone", "no hits: 5 windows × 786 432 channels × 21 trials at S/N 20"],
+           ["2 % of packets dropped", "missing fraction measured 2.00 %; every window skipped and logged"],
+           ["1 hour live on the board", "no packet loss, NIC drop counter unchanged, 110 of 110 windows searched, no "
+                                        "overruns"]],
+          [0.32, 0.68], "Validation of the live search, 20 November 2026. Synthetic runs use non-repeating noise "
+                        "generated on the GPU with a drifting tone injected into one input.")
+    P("On live data a window gives about 3700 hits. Almost all are stationary: Wi-Fi, the board spurs and other local "
+      "interference, with zero drift. A filter for zero-drift hits, clustering across windows and beams, and turning "
+      "hits into raw-voltage triggers are the next steps. The searches' cost against resolution and integration time "
+      "is measured in §10.")
 
     # ------------------------------------------------------------------------------------------------ 9
     H1("Operating the system")
     CODE("lft3-board start                         # program, initialise and sync every board (~10 s)\n"
          "lft3-board status                        # health checks\n"
-         "lft3-pipeline run                        # every board: capture + spectrometer + dump, until Ctrl-C\n"
+         "lft3-pipeline run                        # every board: capture + spectrometer + dump + live search\n"
          "lft3-pipeline run --source synthetic     # without a board: noise + a tone\n"
          "lft3-pipeline status                     # every ring on this host: rate, loss, readers\n"
          "lft3-pipeline trigger --label test       # raw-voltage dump of every board\n"
          "lft3-pipeline stop                       # readers first (files closed), then capture\n"
-         "lft3-search --watch                      # hyperseti on finished files\n"
+         "lft3-pipeline run --observation NAME     # another observation configuration\n"
+         "lft3-search FILE.h5                      # hyperseti on a finished file (same windows as live)\n"
          "lft3-view                                # browser viewer on port 8687")
     P("A healthy run prints, every 10 s per board: 60.8 Gb/s, no increase in partial or skipped blocks or missing "
       "packets, and readers at lag 0 with no overruns. Every run gets a directory with one log per process, the exact "
@@ -882,6 +931,29 @@ def content():
                                                             "the drift search adds more (§11)"]],
           [0.26, 0.15, 0.17, 0.42], "Capacity of DGX Sparks for the full station of six boards, twelve dual-polarisation "
                                     "beams.")
+
+    H2("Resolution and integration time")
+    P("How fine can the channels be, and how short the integrations, before one board's stream stops keeping up? A "
+      "benchmark runs one synthetic stream with a drifting tone and the live search on, as fast as its slowest stage "
+      "allows, for four channel widths and four integration times. The speed is then the stream's capacity in units "
+      "of real time: 1 or more keeps up.")
+    FIGURE("c8_resolution", "Capacity of one stream against fine channel width and integration time. (a) The whole "
+                            "chain writing its spectra to disk; (b) the same without writing; (c) the live search "
+                            "alone on an idle GPU, extended to Hz resolution with a ±4 Hz/s drift range. 64-spectrum "
+                            "windows throughout.", width=16 * cm)
+    B("<b>Writing the spectra is the limit.</b> The FBH5 writer compresses on one thread at about 50 MB/s. Recording "
+      "keeps up while fine channels per board channel divided by the integration time stays below about 1500 per "
+      "second: 1024 channels (149 Hz) at 1 s, or 128 channels (1.2 kHz) at 0.1 s. Without writing, every tested "
+      "combination keeps up, down to 149 Hz at 0.1 s. Compressing chunks in parallel removes this limit.",
+      "<b>The search</b> costs a fixed part per window, about 21 ms per 2<super>17</super> channels for normalising "
+      "and peak finding, plus a part per drift trial. Finer channels add both channels and trials; shorter "
+      "integrations mean fewer trials but more windows per second. Either way the cost rises.",
+      "<b>Toward Hz resolution</b> with 1-second spectra the search falls far behind: 1.7× real time at 18.6 Hz, "
+      "0.1× at 2.3 Hz and 0.03× at 1.16 Hz, about 30 GB10s per board. Hz resolution therefore needs integrations of "
+      "about 10 s and hyperseti's 'stepped' trial plan, which is what the sizing in §11 assumes.",
+      "<b>Sensitivity</b> follows the radiometer equation: the injected tone's S/N grows with the square root of "
+      "the number of fine channels and of the window duration, from 53 at 1.2 kHz and 0.1 s to 363 at 149 Hz and "
+      "1 s.")
 
     H2("Comparison with rawspec")
     FIGURE("c3_rawspec", "rawspec, Breakthrough Listen's standard fine channeliser, against our spectrometer, per "
@@ -1048,6 +1120,14 @@ def content():
            ["Integration windows on absolute block numbers", "one time grid for all readers and boards"],
            ["Capture container not privileged", "three capabilities verified live at line rate"],
            ["Plain FFT, no fine PFB", "same choice as rawspec and seticore; affordable later if leakage matters"],
+           ["Live search on a GPU spectra ring", "file searches cost NIC packets; the live search adds 6.3 MB/s of "
+                                                 "memory traffic and lost nothing in a one-hour soak"],
+           ["One search code for live and files", "same windows, bit-identical data, identical hits"],
+           ["hyperseti with rounded shifts, optimal plan, 64-spectrum windows", "synthetic drifting tones: zero drift "
+                                                                                "reported correctly, no out-of-range "
+                                                                                "ghosts, drift to one 18.6 Hz/s step"],
+           ["Observation configuration file", "one place for resolution, integration, products and search, used by "
+                                              "runs and searches"],
            ["Production: one RTX PRO 6000 per board, 3 servers", "all stages bandwidth-bound; 3.3 GB10-equivalents per "
                                                                  "board at 1.16 Hz against 4.1 per card at 70 %"]],
           [0.38, 0.62], "The main design decisions.")
@@ -1069,8 +1149,11 @@ def content():
       "choices of §11.",
       "<b>Production hardware</b>: port the runtime to x86 with GPUDirect, then test on one RTX PRO 6000 server "
       "before buying (§11).",
-      "<b>Live search</b>: today on finished files. Next: a reader on a spectra ring, a faster dedoppler kernel, and "
-      "heimdall for wideband transients fed from the coarse data.",
+      "<b>Search</b>: the live search works; next a zero-drift filter, clustering of hits across windows and beams, "
+      "hits as triggers for raw-voltage dumps, and heimdall for wideband transients fed from the coarse data. "
+      "hyperseti's shift rounding should be reported upstream.",
+      "<b>Recording rate</b>: the spectra writer compresses on one thread at about 50 MB/s, which limits recording "
+      "at integrations shorter than 1 s or channels finer than 1.2 kHz; compress chunks in parallel.",
       "<b>Pause frames</b>: test whether the board honours them; if it did, NIC buffer overflows would become short "
       "delays instead of loss.",
       "<b>Flags</b>: missing data is counted per spectrum; a channel and time mask is the next step, seeded from the "
@@ -1079,21 +1162,23 @@ def content():
     # ------------------------------------------------------------------------------------------------ appendix
     H1("Appendix: repository map, file locations and glossary")
     TABLE([["Path", "What"],
-           ["config/station.yaml", "the boards of the station and the data directory"],
+           ["config/station.yaml", "the boards of the station, the data directory and the observation in use"],
+           ["config/observations/&lt;name&gt;.yaml", "how data is processed: resolution, integration, products, search, "
+                                                     "dump and ring sizes"],
            ["config/boards/&lt;board&gt;.yaml", "one board: bitstream, clocks, NCO, inputs, network, receiver link and "
                                                "cores, timing"],
            ["config/known_rfi.json", "known RFI, used by the viewer and the search labels"],
            ["src/lft3/board/", "board control, telemetry, captures, sensors (lft3-board)"],
            ["src/lft3/pipeline/, src/lft3/cli/", "run planner and lft3-pipeline"],
            ["src/lft3/ring.py", "Python view of the rings: status, metrics, triggers, CuPy access"],
-           ["src/lft3/search/", "lft3-search (hyperseti)"],
+           ["src/lft3/search/", "live search, file search (lft3-search), the shared search code"],
            ["src/lft3/products/", "readers and plots for FBH5 and captures (lft3-plot)"],
            ["pipeline/src/capture/", "lft3-capture: assembler, scatter kernel, DAQIRI setup, pcap and synthetic "
                                      "sources"],
            ["pipeline/src/common/", "packet format, block layout, ring protocol"],
            ["pipeline/src/spectrometer/", "fused FFT kernels, FBH5 writer, lft3-spectrometer"],
            ["pipeline/src/dump/", "GUPPI RAW writer, lft3-dump"],
-           ["pipeline/bench/", "ring, capacity, rawspec and hyperseti benchmarks"],
+           ["pipeline/bench/", "ring, capacity, rawspec, hyperseti and resolution benchmarks"],
            ["tools/viewer/", "lft3-view"],
            ["docs/user_guide.md", "operating the system"],
            ["docs/runtime.md", "runtime implementation, design decisions and measurements"],
@@ -1105,11 +1190,15 @@ def content():
            ["Coarse spectra", "&lt;data&gt;/spectra/&lt;board&gt;/quicklook/"],
            ["Latest snapshot", "&lt;run&gt;/latest/&lt;board&gt;_latest.json and .f32"],
            ["Raw voltages", "&lt;data&gt;/dumps/&lt;board&gt;/…_beam&lt;N&gt;.0000.raw, with a JSON sidecar"],
-           ["Search hits", "&lt;data&gt;/hits/&lt;board&gt;/&lt;file&gt;.csv"],
+           ["Search hits, live", "&lt;data&gt;/hits/&lt;board&gt;/live_&lt;stream&gt;_&lt;UTC&gt;.csv and "
+                                 ".windows.jsonl"],
+           ["Search hits, files", "&lt;data&gt;/hits/&lt;board&gt;/&lt;file&gt;.csv"],
+           ["Effective observation", "&lt;run&gt;/observation.yaml"],
            ["Run records", "&lt;data&gt;/runs/&lt;UTC&gt;_&lt;board&gt;_&lt;source&gt;/: logs, plan.txt, "
                            "status.jsonl, nic-&lt;link&gt;.csv, triggers.log"],
            ["Ring control block", "/dev/shm/lft3-&lt;board&gt;-&lt;link&gt;"],
            ["Ring data socket", "/dev/shm/lft3-&lt;board&gt;-&lt;link&gt;.sock"],
+           ["Spectra ring", "/dev/shm/lft3-&lt;board&gt;-&lt;link&gt;-spectra (+ .sock)"],
            ["FBH5 per-spectrum data", "/lft3_timestamp, /lft3_missing_packets; lft3_* root attributes"]],
           [0.3, 0.7], "File locations. &lt;data&gt; is the data directory of the station file.")
     TABLE([["Term", "Meaning"],
@@ -1124,12 +1213,16 @@ def content():
            ["GUPPI RAW", "raw-voltage file format: 80-character header cards and blocks of [channel][time][pol] "
                          "samples"],
            ["link, stream", "one board's 100 GbE connection, with its own capture process and ring"],
+           ["observation", "the configuration of how data is processed (resolution, integration, products, search)"],
            ["overrun", "a block a reader lost because the writer reused its slot first"],
            ["ring, slot", "the per-board circular buffer of blocks in GPU memory; one block-sized position in it"],
            ["seqlock", "versioned read: check a sequence number before and after reading to detect concurrent "
                        "overwrites"],
+           ["spectra ring", "ring of integrated fine spectra in GPU memory, written by the spectrometer for the live "
+                            "search"],
            ["sync", "board command that restarts t at 0 and applies pending header settings"],
            ["t", "spectrum counter since the last sync, one per 6.5536 µs"],
+           ["window (search)", "consecutive spectra searched together: 64 by default, a new one every 32"],
            ["VMM", "CUDA's virtual memory management API; used to share GPU memory between processes by file "
                    "descriptor"]],
           [0.2, 0.8], "Glossary.")
