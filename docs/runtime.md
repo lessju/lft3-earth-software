@@ -3,9 +3,8 @@
 How the LFT3 real-time runtime in `pipeline/` works, why it is built this way, and what it can do on one DGX
 Spark. The operator's view (commands, files, troubleshooting) is in `docs/user_guide.md`.
 
-Status (2026-11-13): implemented, unit-tested, running on the live board. Live result: 60.8 Gb/s, zero loss,
-1 s fine spectra, quick-look and triggered raw-voltage dumps. It replaced the CyberEther plugin.
-2026-11-20: live narrowband drift search on the spectra in GPU memory (§4.6, decisions 16–18).
+Status: implemented, unit-tested and running on the live board at 60.8 Gb/s without loss: 1 s fine spectra,
+quick-look, triggered raw-voltage dumps, and a live narrowband drift search on the spectra in GPU memory (§4.6).
 
 ## 1. The picture
 
@@ -34,10 +33,11 @@ Status (2026-11-13): implemented, unit-tested, running on the live board. Live r
  → <data_dir>/hits/<board>/live_<stream>_<UTC>.csv + .windows.jsonl
 ```
 
-`lft3-pipeline` (Python) plans and launches these processes as containers (image `lft3-runtime`), one set
-per link of the board, and reads the control planes for status and Prometheus metrics.
+`lft3-pipeline` (Python) plans and launches these processes, one set per link of the board: the C++ processes
+as containers (image `lft3-runtime`), the live search on the host. It reads the control planes for status and
+Prometheus metrics.
 
-## 2. How we got here: the decisions and the evidence
+## 2. Design decisions and the evidence
 
 In the order they were made. Each one is backed by a measurement on this machine.
 
@@ -56,9 +56,9 @@ In the order they were made. Each one is backed by a measurement on this machine
    * **Rejected for now**, to be revisited when 5.x settles.
 3. **hashpipe compared.** Its building blocks are the same (shared-memory blocks, pinned threads, GPU reading
    pinned memory). But its buffers are semaphore handshakes with one consumer each, which back-pressures the
-   network thread: the behaviour we were leaving. Its conventions are kept: GUPPI RAW for dumps,
+   network thread, which is what the runtime must not do. Its conventions are kept: GUPPI RAW for dumps,
    hpguppi-style observation keys.
-4. **Own runtime: a single-writer ring with independent readers** (the original design note).
+4. **Own runtime: a single-writer ring with independent readers.**
    * The writer never waits.
    * A reader that falls behind loses blocks and counts them (seqlock overruns).
    * Readers are separate processes: a crash in a search cannot stop the capture.
@@ -103,22 +103,21 @@ In the order they were made. Each one is backed by a measurement on this machine
 11. **Capacity measured** (§6): with the warp kernel, 5 streams pass with margin, 6 do not. The network allows 2
     direct links per Spark.
 12. **2-hour live soak** (2026-11-13, 6.59×10⁹ packets, 23 DDR dumps + 23 raw-voltage dumps every 5 min):
-    * no packet loss of the system's own making, 7 201 spectra with 0 reader overruns, every raw dump complete;
-    * the earlier rare gaps at DDR dumps (2 in 121) did not recur (0 in 23);
-    * the one loss (277 packets) happened while a hyperseti search ran on the same Spark (item 13);
-    * stopping used to count the last, half-received block as "missing": incomplete blocks at stop are now dropped
-      and logged instead.
+    * no packets lost in the runtime; 7 201 spectra with 0 reader overruns; every raw dump complete;
+    * no gaps at DDR dumps (0 in 23; earlier soaks had 2 in 121, cause not attributed);
+    * the only loss, 277 packets at the NIC, happened while a hyperseti file search ran on the same Spark (item 13);
+    * the last, half-received block at stop is dropped and logged rather than counted as missing.
 13. **Memory-bus contention can cost packets at the NIC.** A hyperseti search of a 1.2 GB file, running alongside
     the live capture, loaded the shared LPDDR5x enough that the NIC discarded 277 packets (`rx_discards_phy`;
     DAQIRI's queue never ran empty). Host pause frames (`tx_global_pause`) did not prevent it, so the board
     probably ignores 802.3x pause. The readers were unaffected, and the synthetic capacity benchmark cannot show
     this, since no NIC is involved. **Heavy GPU or memory jobs on the capture host must be throttled or moved
-    elsewhere.**
+    elsewhere.** The live search (item 16) avoids the problem for the search itself.
 14. **rawspec comparison** (built for sm_121; CUDA 13 needed a 3-line patch to its cuFFT error-name table, and 2^17
     needs `LOAD_TEXTURE_WIDTH_POWER=17`). Run on a GUPPI RAW dump from the soak:
-    * same algorithm: identical channel order, values equal to ours after rawspec's 1/127 sample scaling
+    * same algorithm: identical channel order, values equal to the LFT3 spectrometer's after rawspec's 1/127 sample scaling
       (median relative difference 7.6×10⁻⁸);
-    * at 128 points, rawspec needs 9.2 ms per block per beam at best (`Nbc` 64), against our 0.15 ms: **about 60×
+    * at 128 points, rawspec needs 9.2 ms per block per beam at best (`Nbc` 64), against the warp kernel's 0.15 ms: **about 60×
       slower**, because it is built for very long FFTs;
     * at **2^17 points** (1.16 Hz), rawspec needs 13.2 ms + 5.2 ms copy per block per beam (real time = 6.7 ms):
       **it cannot keep up with one beam**;
@@ -164,21 +163,23 @@ In the order they were made. Each one is backed by a measurement on this machine
     * hyperseti's `merge_hits` (one pandas query per hit) was the cost: replaced by `core.merge_hits`, same
       greedy rule, **identical merged hits** in 25 gulps of soak data (8055 raw hits), 0.047 s instead of
       8.6 s; a real window now takes ~0.7 s per beam (~4 % of the step).
-
 19. **Zero-drift hits are dropped** (2026-11-20, `search.drop_zero_drift`). On live data ~99.9 % of the
     unlabelled hits had drift exactly 0: stationary, i.e. local RFI. They are dropped after the hit merge (so a
     stationary signal's weaker off-zero trials, folded into its zero-drift peak, go with it), in the live and the
     file search alike; each window record counts them. A synthetic stationary tone: found and dropped in 8/8
     windows. Live (6 min, 9 windows): ~3950 dropped and ~160 kept per window, of which 97 % labelled Wi-Fi and ~4
-    unlabelled; the strongest unlabelled ones sit at ±18.6 Hz/s, one step off zero, i.e. still stationary. Cost: a real drift below one trial step (18.6 Hz/s at 1.19 kHz × 64 s) can be reported as 0 and is
-    dropped too.
+    unlabelled; the strongest unlabelled ones sit at ±18.6 Hz/s, one step off zero, i.e. still stationary.
+    Searching took 3.6–3.9 s per window there (12 % of the 32 s step), against ~1.4 s for the same kind of window
+    offline on an idle GPU. Cost: a real drift below one trial step (18.6 Hz/s at 1.19 kHz × 64 s) can be reported as 0 and is dropped
+    too.
 20. **Search → trigger, built and off** (`triggering:`, `lft3-pipeline run --search-triggers`). After each window
     the strongest hit with S/N ≥ 50, not labelled RFI and not also in the other beam (within 2 channels) sends
     `trigger now 0.5 0.5 <label>` to the stream's `lft3-dump`, at most every 10 s, logged to `triggers.log`.
     The dump covers the moment of the decision: the voltage ring holds ~2 s, the window ends up to 64 s before
     its search, so a trigger catches signals that persist, not the window's own voltages (a longer raw buffer is a
     sizing question, docs/sizing.md). Tested: 4/4 searched windows with a +50 Hz/s tone (S/N 143) triggered complete
-    1 s GUPPI RAW dumps 32 s apart; a stationary tone triggered nothing. Off until the hit rules are agreed.
+    1 s GUPPI RAW dumps 32 s apart; a stationary tone triggered nothing. Off until the hit rules are agreed; given
+    the stationary hits one step off zero (item 19), they should include `min_abs_drift_hz_s` ≥ one step.
 21. **FBH5 chunks compressed in parallel** (`--compress-threads`, default 4). The resolution benchmark found the
     single-thread writer (HDF5's shuffle + deflate inside `H5Dwrite`) capped recording at ~50 MB/s compressed.
     The writer now shuffles and deflates the 64 Ki-channel chunks of a spectrum on several threads (zlib level 1,
@@ -248,8 +249,11 @@ In the order they were made. Each one is backed by a measurement on this machine
 6. Statistics go straight into the control block: packets received, accepted, filtered, duplicate, late, no-slot
    and missing; blocks complete, partial and skipped; restarts; Gb/s. Capture also logs a summary every 5 s.
 
-Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identical to the old generator) and
-`file` (replays whole blocks of a pcap, optionally looped). Synthetic and file sources can run `--fast` and with
+Sources: `network` (DAQIRI), `synthetic` and `file` (replays whole blocks of a pcap, optionally looped). The
+synthetic source has two modes: `periodic` (default) replays 1024 spectra of noise + a tone from host memory,
+bit-identical to the CyberEther generator, for parity tests; `random` (`--noise random`) writes non-repeating
+hashed noise and an optionally drifting tone into each block on the GPU (`capture/synth.cu`), for anything that
+integrates or searches (a repeating block makes every integrated spectrum identical). Synthetic and file sources can run `--fast` and with
 `--backpressure` / `--wait-readers N`, so tests and benchmarks are lossless.
 
 ### 4.2 The ring protocol (`common/ring.hh`)
@@ -277,22 +281,29 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
 * **Integration windows are aligned to absolute block numbers**: window w = blocks `[wN, (w+1)N)`, N = round(1 s ×
   rate / 1024) = 149 → 0.99992 s. Every reader and every link therefore shares one time grid. A reader that
   attaches mid-window starts at the next boundary. `lft3_timestamp` is the window's first spectrum t.
-* **Fine mode**: per block, one fused kernel launch over (channel, beam). It loads 128 dual-pol samples per
-  segment, does a radix-2 FFT in shared memory, adds |X|²+|Y|² over the 8 segments of the block, then adds the
-  result into the accumulator. At the window end the accumulator is copied to the host and handed to the writer
-  thread, which uses a 4-buffer pool.
+* **Fine mode**: per block, one fused kernel launch over (channel, beam). It FFTs each segment of 128 dual-pol
+  samples (the warp kernel for 64/128/256 points, a shared-memory kernel otherwise; decision 10), adds
+  |X|²+|Y|² over the 8 segments of the block, then adds the result into the accumulator. At the window end the
+  accumulator is copied into the spectra ring (if enabled) and to the host, where a writer thread with a 4-buffer
+  pool writes the files.
 * **Coarse product** (fine mode with `--coarse-dir` / `--latest`): per board channel, the sum of its fine bins
   divided by the FFT length. This equals the coarse-mode power computed from the voltages.
+* **Spectra ring** (`--spectra-ring N`, set by `lft3-pipeline` when the live search is on): after each
+  integration the accumulator is copied device to device into slot `<stream>-spectra` (float32 [beam][channel],
+  6.3 MB at 1.19 kHz) and published with the window number as `blockIndex`, its first spectrum as `t0`, the
+  missing packets, and flags (bit 0 partial, bit 1 discontinuity before it). The control block carries
+  `kind = spectra`, the FFT length, `fch1`, `foff` and `tsamp`. Windows discarded as overwritten are not
+  published, so the reader sees a gap. Backpressure follows `--lossless`.
 * **Missing data** per spectrum = zero-filled packets + blocks the capture skipped + blocks this reader lost,
   in packets. A window whose data was overwritten during the read is discarded. A gap of whole windows, a restart,
   or t going backwards starts new files. Files rotate every 3600 spectra; `lft3_timestamp` stays continuous across
   rotation.
-* **FBH5 output**: unchanged from the CyberEther version.
+* **FBH5 output** (the same layout as the CyberEther implementation wrote):
   * File names: `<prefix>_<UTC>_beam<N>.h5`, N = link beam offset + 0/1.
   * `/data` is chunked per 64 Ki channels with shuffle + deflate 1; `/mask` uses deflate 4.
   * Also present: `/lft3_timestamp` and `/lft3_missing_packets`; the SIGPROC attributes (`fch1`, `foff`,
     `tsamp`, `tstart`, `nfpc`, …); `lft3_*` root attributes (NCO, pfb_lsb, layout, time reference).
-  * New attributes: `lft3_stream`, `lft3_obs_id`, `lft3_config_hash`, `lft3_mode`, `lft3_beam_offset`.
+  * Run attributes: `lft3_stream`, `lft3_obs_id`, `lft3_config_hash`, `lft3_mode`, `lft3_beam_offset`.
 * **Compression in parallel**: each spectrum's chunks are shuffled + deflated on `--compress-threads` threads and
   written with `H5Dwrite_chunk` (decision 21).
 * **Storage and volume**: chunks are one spectrum × 65 536 channels, so a frequency range decodes only its chunks.
@@ -300,17 +311,11 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
   deflate 4. That needs the h5dsc99 patch `shuffle_deflate.diff`. Fine spectra are 3.1 MB/s per beam before
   compression and ≈ 2.2 MB/s on disk: ~16 GB/hour per link (2 beams). The coarse product is ~1/128 of that.
 
-* **Spectra ring** (`--spectra-ring N`, set by `lft3-pipeline` when the live search is on): after each
-  integration the accumulator is copied device to device into slot `<stream>-spectra` (float32 [beam][channel],
-  6.3 MB at 1.19 kHz) and published with the window number as `blockIndex`, its first spectrum as `t0`, the
-  missing packets, and flags (bit 0 partial, bit 1 discontinuity before it). The control block carries
-  `kind = spectra`, the FFT length, `fch1`, `foff` and `tsamp`. Windows discarded as overwritten are not
-  published, so the reader sees a gap. Backpressure follows `--lossless`.
-
 ### 4.4 Dump (`lft3-dump`)
 
 * **Trigger**: `trigger <now|UNIX> [pre] [post] [label]` on `/dev/shm/lft3-<stream>-dump.sock`. `lft3-pipeline
-  trigger` sends the same UNIX time to every link and appends to `<data_dir>/triggers.log`.
+  trigger` sends the same UNIX time to every link and appends to `<data_dir>/triggers.log`; the live search sends
+  its own when triggering is enabled (§4.6).
 * **Window**: `[t − pre, t + post)` in whole blocks, located through the capture's UNIX time of t = 0. Blocks
   still in the ring, or arriving later, are copied by the GPU into a pinned host buffer. The buffer is allocated at
   start (7.5 GB per second of window).
@@ -322,9 +327,10 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
 ### 4.5 Orchestration (`lft3-pipeline`, `lft3.pipeline.runtime`)
 
 * `plan_run(board, RunOptions)` → for each link: a capture (for the network source `--net host` with
-  `CAP_NET_RAW`, `CAP_IPC_LOCK` and `/dev/infiniband`, pinned to the link's 3 cores) and readers (unprivileged, `--net none`, the caller's uid and groups, on the
-  link's `reader_cpus`). All containers share the host IPC namespace.
-* `run` starts each capture, waits for its ring, then starts its readers. It pumps each process's output to
+  `CAP_NET_RAW`, `CAP_IPC_LOCK` and `/dev/infiniband`, pinned to the link's 3 cores), readers (unprivileged,
+  `--net none`, the caller's uid and groups, on the link's `reader_cpus`) and, with the live search, a host
+  process. All containers share the host IPC namespace.
+* `run` starts each capture, waits for its ring, then starts its readers and the search. It pumps each process's output to
   `<run_dir>/<stream>-<role>.log`, prints a status line from the rings, appends `status.jsonl`, logs NIC counters
   per link, and optionally serves Prometheus metrics.
 * Stopping (Ctrl-C, `--duration`, `stop`): the live search first, then readers (they close files), then captures.
@@ -348,8 +354,8 @@ Sources: `network` (DAQIRI), `synthetic` (deterministic noise + tone, bit-identi
 * Triggering (decision 20, off by default): `trigger_candidate` picks the strongest hit passing the rules; the
   dump command goes over `/dev/shm/lft3-<stream>-dump.sock` (`lft3.ring.send_dump_command`).
 * Output per run: `live_<stream>_<UTC>.csv` (`lft3.search.core.HIT_COLUMNS`) and `.windows.jsonl` (per window:
-  searched or why not, hits, zero-drift hits dropped, trigger sent, search time, latency, lag). `--search-save-every K` saves every K-th window as .npy
-  in `<run_dir>/windows/` for bit-exact checks against FBH5.
+  searched or why not, hits, zero-drift hits dropped, trigger sent, search time, latency, lag).
+  `--search-save-every K` saves every K-th window as .npy in `<run_dir>/windows/` for bit-exact checks against FBH5.
 
 ## 5. Adding a reader
 
@@ -370,20 +376,25 @@ while (running) {
 }
 ```
 
-**Python** (e.g. hyperseti on CuPy; any Python ≥ 3.8, CuPy needed only for the voltages):
+**Python** (any Python ≥ 3.8; CuPy for the GPU data). `Ring` is an unregistered view, `RingReader` a registered
+reader with a cursor, heartbeat and optional backpressure (`lossless=True`), as the live search uses:
 
 ```python
-from lft3.ring import Ring
-r = Ring("rfsoc0-link0")
-v = r.voltages()                       # CuPy uint8 [slots, block_bytes], read-only VMM mapping
-seq = r.head - 1
-m = r.slot_meta(seq); s = r.slot_index(seq)
-blk = v[s].view("int8").reshape(2, 6144, 1024, 2, 2)    # [beam, channel, t, pol, re/im]
-... ; assert r.slot_meta(seq) is not None               # still valid after reading
+from lft3.ring import RingReader
+rd = RingReader("rfsoc0-link0", "mysearch")            # or "rfsoc0-link0-spectra" for the spectra ring
+v = rd.ring.voltages()                                 # CuPy uint8 [slots, block_bytes], read-only VMM mapping
+seq = rd.cursor
+while running:
+    if not rd.wait(seq, 1.0): continue
+    if seq < rd.oldest_readable(): seq = rd.oldest_readable(); continue     # fell behind
+    got = rd.begin(seq)
+    if got is None: seq += 1; continue                                     # overwritten
+    meta, slot = got
+    blk = v[slot].view("int8").reshape(2, 6144, 1024, 2, 2)  # [beam, channel, t, pol, re/im]
+    ...                                                       # GPU work, then synchronise
+    if not rd.still_valid(seq): discard_result()
+    seq += 1; rd.consumed(seq)
 ```
-
-The Python reader does not register a cursor: it is lossy and invisible to backpressure. Register through the
-C++ API if a reader needs that.
 
 ## 6. Performance and capacity
 
@@ -393,7 +404,7 @@ C++ API if a reader needs that.
 |---|---|---|
 | Scatter (6 launches of ≤ 1024 packets) | 0.50 ms (7.4 %) | ~200 GB/s: memory-bound |
 | Fine spectrometer, warp kernel | 0.30 ms (4.5 %) | ~167 GB/s, near memory-bound (shared-memory kernel: 0.50 ms) |
-| Coarse quick-look (now derived on the CPU) | 0 (was 0.23 ms) | |
+| Coarse quick-look, derived from the fine spectrum on the CPU | 0 | a separate coarse reader: 0.23 ms |
 | CPU | 1 core busy-polling (DAQIRI worker), ~4 % processing thread, ~18 % spectrometer | |
 | Memory | ~23 GB by default: ring 2 s = 15 GB VMM, dump window 1 s = 7.5 GB pinned, DAQIRI 0.5 GB | |
 
@@ -417,7 +428,7 @@ compete for the shared 273 GB/s LPDDR5x bus, which slows every kernel. At 6 stre
 designed: every capture stayed at real time, and only the readers lost blocks.
 
 **Caveat (decision 13):** these runs have no NIC. On the live system, memory-bus load from other jobs can make the
-NIC itself drop packets before any of our code sees them. Leave headroom on the memory bus, not only on the GPU.
+NIC itself drop packets before the runtime sees them. Leave headroom on the memory bus, not only on the GPU.
 
 **Network limits** (from `docs/architecture.md` and DAQIRI's Spark report; not measurable here with one board):
 * Each of the Spark's two QSFP ports is two ~100G PCIe halves.
@@ -427,7 +438,8 @@ NIC itself drop packets before any of our code sees them. Leave headroom on the 
 **Answer for the station, 6 boards × 1 link (6 streams, 12 dual-pol beams, 366 Gb/s):**
 
 * **Two boards per Spark** (2 direct-attached links, one per QSFP port, 2 streams, 122 Gb/s) is known to work.
-  It uses under half of the GPU, which leaves room for searches as long as they are throttled (decision 13).
+  It uses under half of the GPU, which leaves room for the live search (file searches must not run on the
+  capture host during a run, decision 13).
   **3 Sparks.**
 * **Four boards per Spark** (4 streams) fits the compute (87 % GPU) but leaves little GPU or memory bandwidth for
   searches. It needs 4 links into one Spark, i.e. a switch or breakout with flows steered to all four PCIe halves
@@ -445,7 +457,7 @@ One synthetic stream (random GPU noise + a 50 Hz/s tone), live search on (64 spe
 zero-drift drop), `--fast --lossless`: the chain runs as fast as its slowest stage, so the speed is the stream's
 capacity in units of real time (≥ 1 keeps up). Raw results: `docs/system_overview/data/resolution_bench.json`.
 
-| Fine channels (width) | Integration | Writing FBH5 (4 threads) | Writing, single thread (before) | Not writing | Search alone, idle GPU | Tone S/N |
+| Fine channels (width) | Integration | Writing FBH5 (4 threads) | Writing FBH5 (1 thread) | Not writing | Search alone, idle GPU | Tone S/N |
 |---|---|---|---|---|---|---|
 | 128 (1192 Hz) | 1 / 0.5 / 0.25 / 0.1 s | 5.3 / 5.1 / 4.9 / 2.9× | 5.3 / 5.1 / 3.1 / 1.1× | 5.3 / 5.1 / 4.9 / 3.3× | 108 / 60 / 31 / 13× | 144 / 113 / 65 / (31) |
 | 256 (596 Hz) | same | 4.8 / 4.6 / 4.1 / 1.6× | 4.8 / 3.1 / 1.5 / 0.56× | 4.8 / 4.6 / 4.2 / 3.0× | | 198 / 144 / 100 / (55) |
@@ -482,16 +494,12 @@ capacity in units of real time (≥ 1 keeps up). Raw results: `docs/system_overv
 * **Hz resolution** (Nf = 2^16–2^17): a fused path (cuFFT with load/store callbacks, or a custom kernel), gathering
   64–128 blocks per channel row (232 GB/s measured gather); ring ≥ 2 × FFT length (12.9 GB at 2^17). Unmodified
   rawspec is too slow on GB10 (decision 14). Decide the band and output volume first (`docs/architecture.md`).
-* **FBH5 writer**: ~160 MB/s with 4 threads (decision 21); finer channels at 0.1 s need more threads or cores.
-* **Trigger rules**: on live data the strongest hits left after the zero-drift drop are stationary signals one
-  step off zero (±18.6 Hz/s, e.g. Wi-Fi); require |drift| > one step (`triggering.min_abs_drift_hz_s`) before
-  enabling triggers.
-* **Searches**: live search on the spectra ring done (decisions 16–18). Next: a zero-drift / stationary-RFI
-  filter (99.9 % of the unlabelled live hits have drift 0; SETI searches usually exclude |drift| below one
-  step), hits → triggers (GPU narrowband
-  trigger into `lft3-dump`), cross-window/cross-beam hit clustering and RFI rejection, report the hyperseti
-  kernel issue upstream, heimdall from coarse detection. At Hz resolution the search window holds
-  2^20 channels per beam and costs ~2 GB10 per stream (docs/sizing.md).
+* **FBH5 writer**: ~160 MB/s with 4 threads (decision 21); 298–149 Hz channels at 0.1 s need more threads or
+  cores.
+* **Searches**: agree the trigger rules (with `min_abs_drift_hz_s` ≥ one step, decision 20) before enabling
+  triggers; cluster hits across windows, beams and boards; an RFI mask before the search; report the hyperseti
+  kernel issue upstream; heimdall on the coarse data for wideband transients. At Hz resolution the search needs
+  ~10 s spectra and the `stepped` plan, and costs ~2 GB10 per stream (docs/sizing.md).
 * **Second board on the same Spark** (its link on the other QSFP port; the config mechanism is the commented `link1`
   entry in `config/boards/rfsoc0.yaml`, moved to that board's YAML). Confirm its PCI function, UDP
   port and source IP when it is cabled.

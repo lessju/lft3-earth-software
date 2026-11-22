@@ -1,9 +1,14 @@
 # DGX Spark receive + spectrometer architecture (one RFSoC 4x2 board, one 100G link)
 
-> **Status (2026-11-13):** implemented as the ring-buffer runtime in `pipeline/` (`docs/runtime.md`): DAQIRI capture →
-> GPU voltage ring → fused fine spectrometer (1.19 kHz, interim) → FBH5, plus GUPPI RAW dumps. The rawspec
-> design and sizing below remain the plan for Hz-level resolution, which needs cuFFT-sized FFTs. The
-> "corner turn" here is the receiver's scatter kernel. The 4 inputs are 2 dual-pol beams, Stokes I formed on the GPU.
+> **Status:** this is the original plan for one board on the DGX Spark. It is implemented as the ring-buffer
+> runtime in `pipeline/` (`docs/runtime.md`): DAQIRI capture → GPU voltage ring → fused fine spectrometer
+> (1.19 kHz, interim) → FBH5, plus GUPPI RAW dumps and a live drift search. Where it differs from what follows:
+> * **rawspec** was measured on the GB10 and is too slow at 2^17 points for even one beam in real time
+>   (`docs/runtime.md` decision 14). The Hz-resolution path will be a fused cuFFT channeliser in the runtime; the
+>   sizing and output-volume analysis below still apply.
+> * The 4 inputs form **2 dual-pol beams** (Stokes I formed on the GPU), not 4 independent beams as in the tables.
+> * The "corner turn" is the capture's scatter kernel. DDR dumps are received on a UDP socket, not a second
+>   DAQIRI queue.
 
 ```
 RFSoC 4x2 ──100GbE──► ConnectX-7 (one PCIe Gen5 x4 half, ~95 Gb/s usable)
@@ -93,6 +98,6 @@ reads the DAQIRI buffers in place, zero-fills missing packets, and counts them p
 ## Where the viewer fits
 
 Live views and browsing use the reduced products (coarse spectra at ~1 s, zoomed fine-resolution windows):
-`lft3-view`, `lft3-plot`, or a reader of the latest snapshot. Nothing interactive sits in the 60 Gb/s path.
-CyberEther was used for the first implementation. It was replaced because its lock-step scheduler lets a slow
-consumer stall the receiver (`docs/runtime.md` §2).
+`lft3-view`, `lft3-plot`, or a reader of the latest snapshot. Nothing interactive sits in the 60 Gb/s path,
+which is why a CyberEther plugin, whose lock-step scheduler lets a slow consumer stall the receiver, was not
+kept (`docs/runtime.md` §2).

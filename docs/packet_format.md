@@ -3,8 +3,8 @@
 Sources: `data_rates_packetizer_v2.xlsx` (sheets *Data Rates*, *Channel Packets*, *ADC Packets*,
 *Ringbuffer*, *Final Specs*), plus the firmware author's working parser
 `lft3-earth-main/host/scripts/listener.py`, the firmware README, and register reads from a running
-`spectrometer_8way_4x` board. Items marked **CONFIRMED (listener.py)** were assumptions in the first draft and are
-now fixed by the firmware parser; the decoder keeps them configurable so a capture can still overrule them.
+`spectrometer_8way_4x` board. Items marked **CONFIRMED (listener.py)** are fixed by the firmware author's parser;
+the decoder keeps them configurable so a capture can still overrule them.
 
 ## Network
 
@@ -23,7 +23,7 @@ now fixed by the firmware parser; the decoder keeps them configurable so a captu
 | Sampling | 5000 MSPS real → IQ, 4× decimation → 1250 MSPS complex |
 | PFB | **8-tap** (firmware README; the design review says 4), 8192 points, 152.587890625 kHz channels |
 | Channels sent | 6144 per beam (k = 0..6143), 937.5 MHz around NCO centre |
-| Beams per board | 4 (beam j = 4p + {0..3}, p = board fid) |
+| Beams per board | 4 in the firmware's naming (beam j = 4p + {0..3}, p = board fid): one per ADC input; the host pairs them into 2 dual-pol beams |
 | Sample format | 8-bit I / 8-bit Q, two's complement |
 | Packets per timestamp | 6 (bindex b = 0..5, 1024 channels each) |
 | UDP payload | 64 B header + 1024 ch × 4 beams × 2 B = **8256 B** |
@@ -38,12 +38,12 @@ Header: eight 64-bit words, **big-endian / network order** (CONFIRMED (listener.
 | 0 | t timestamp (58) · b bindex (3) · p fid (3) |
 | 1 | nco0 (32) · nco1 (32) |
 | 2 | nco2 (32) · nco3 (32) |
+| 3 | pfb_lsb0 (16) · pfb_lsb1 (16) · pfb_lsb2 (16) · pfb_lsb3 (16) |
+| 4–7 | optional metadata (unused) |
 
 The nco fields are **signed int32, in whole MHz**: software writes `int(round(nco_MHz))`, so an NCO of
 −2031.25 MHz shows up as −2031 (0xFFFFF811). Use them as labels only. The exact frequency has to come from the
 observing configuration.
-| 3 | pfb_lsb0 (16) · pfb_lsb1 (16) · pfb_lsb2 (16) · pfb_lsb3 (16) |
-| 4–7 | optional metadata (unused) |
 
 Payload: 1024 64-bit words, word i = channel k = 1024·b + i. On the wire the firmware emits 128 × 512-bit
 words of 8 channels each, which in byte order gives the same 1024 × 8-byte sequence. Inside each 8-byte group,
@@ -52,8 +52,9 @@ beam 4p+0 comes first (most significant 16 bits), and each 16-bit sample is I in
 
 Channel ↔ frequency: k = 0 is PFB channel 5120 and k = 6143 is PFB channel 3071 (wrapping), i.e.
 signed FFT bin = k − 3072, so the offset from the NCO centre is (k − 3072) × 152.587890625 kHz:
-k ascending = frequency ascending, from −468.75 MHz to +468.60 MHz. The RF sign/flip relative to the
-(negative) NCO setting has to be confirmed with a test tone.
+k ascending = frequency ascending, from −468.75 MHz to +468.60 MHz, and RF = −NCO + offset for the negative NCO:
+**confirmed** by the board's spurs landing on exact 125 MHz multiples (2026-11-12) and by an 1800 MHz test tone
+appearing at 1800.04 MHz with no mirror (2026-11-13).
 
 ## ADC packets (triggered ring-buffer dump)
 
@@ -83,8 +84,8 @@ The packet holding the trigger instant is s = (ddr_size + 1 − ddr_read_delay) 
 
 ## Open questions for the firmware / packetizer spec
 
-1. ~~Endianness, beam/ADC order, I/Q order.~~ Settled by listener.py (big-endian, index 0 first, I high).
-   The RF sign of the spectrum (whether k ascending = RF ascending for a negative NCO) still needs a test tone.
+1. ~~Endianness, beam/ADC order, I/Q order, RF sign.~~ Settled by listener.py (big-endian, index 0 first, I high)
+   and a test tone (k ascending = RF ascending for the negative NCO).
 2. ~~Telling the two packet types apart.~~ Settled: dst port 60000 (channel) vs 40000 (ADC).
 3. ~~A contiguous packet sequence number.~~ Not needed: the capture assembler orders packets and counts loss from
    (t, b) in word 0.
@@ -96,4 +97,4 @@ The packet holding the trigger instant is s = (ddr_size + 1 − ddr_read_delay) 
      nor 2 real beams (32.1 Gb/s).
    * The VHF band is 200 MHz wide, but the configuration ships ~1 GHz per beam, and 2 of the 4 beams are zeros.
 6. pfb_lsb / adc_lsb (bit-slice positions) are needed to put spectra on a common power scale across
-   requantisation changes. The spectrometers currently output raw power and carry these fields as metadata.
+   requantisation changes. The spectrometer writes raw power and carries these fields as metadata.

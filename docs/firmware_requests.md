@@ -1,8 +1,8 @@
 # Suggested firmware changes: spectrometer_8way_4x
 
-From the host-software side (DGX Spark receiver), after first captures on 2026-11-12. Design:
+From the host-software side (DGX Spark receiver), from captures and live runs since 2026-11-12. Design:
 `designs/spectrometer_8way/spectrometer_8way_4x.slx`, bitstream `spectrometer_8way_4x.fpg`.
-Ordered by priority. Each item says what we saw, what we'd like, and why.
+Numbered in the order raised; each heading gives the priority. Each item says what we saw, what we'd like, and why.
 
 ## 1. Destination IP and UDP ports as software registers (high)
 
@@ -77,6 +77,8 @@ fs/8 of the 1250 MSPS stream (channel k = 2048).
 ## 8. Input / polarisation labelling (low)
 
 **Assumed:** inputs follow `ADC_MAP = [(0,0), (0,1), (2,0), (2,1)]` = beam 1 X, beam 1 Y, beam 2 X, beam 2 Y.
+**Seen (2026-11-13, tone test):** the front-panel SMA labelled "ADC 0" feeds firmware input 3 = (tile 2,
+block 1), so panel labels and firmware input numbers differ.
 
 **Request:** confirm this, and say which front-panel connector is which. Ideally, add a small header field or
 register describing the input → beam/pol mapping.
@@ -93,7 +95,8 @@ register describing the input → beam/pol mapping.
 
 **Seen (2026-11-12, `lft3-board status`):** `raw_cycles_per_pps` = 156 246 153–180, i.e. **−24.6 ppm** relative
 to the PPS. The PPS in the lab is temporary, so this still has to be confirmed with a proper PPS. If it is the
-clock, every sky frequency at 2 GHz is off by ~49 kHz. `expected_clk_period` defaults to 208 333 332 (a
+clock, every sky frequency at 2 GHz is off by ~49 kHz. An 1800 MHz test tone (2026-11-13) appeared +22.5 ppm
+high, which points at the board clock rather than the PPS. `expected_clk_period` defaults to 208 333 332 (a
 208.33 MHz clock), so `pps_drift_err_cnt` increments on every PPS. It is writable, and the host now sets it
 to 156250000 at start-up. `clk_cycles_per_pps` returns a different value on every read
 (14.7 M, 171 M, 119 M), so it does not look like a latched period.

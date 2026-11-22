@@ -13,6 +13,7 @@ For every 100 GbE link from a board (a "stream", named `<board>-<link>`, e.g. `r
 | spectrometer | `lft3-<stream>-spectrometer` | 128-point FFT per board channel (1.19 kHz), Stokes I, 1 s integrations | fine FBH5, coarse FBH5, latest coarse spectrum |
 | dump | `lft3-<stream>-dump` | waits for triggers, saves a window of raw voltages | GUPPI RAW |
 | quicklook (optional) | `lft3-<stream>-quicklook` | coarse power at a faster cadence | latest snapshot only |
+| live search | host process (search venv) | hyperseti on the spectrometer's spectra in GPU memory, a window every 32 s | hits CSV, per-window record; raw-voltage triggers when enabled |
 
 Each process can fail or be restarted without affecting the capture. If a reader is too slow it loses
 blocks (counted); the capture never loses data because of a reader.
@@ -38,35 +39,14 @@ make test && make lint       # Python tests
 
 ## 3. Configuration
 
-`config/boards/<board>.yaml`, section `receiver`:
-
-```yaml
-receiver:
-  links:
-    - name: link0
-      interface: '0000:01:00.0'     # ConnectX PCI function (enp1s0f0np0)
-      master_core: 5                # DAQIRI master
-      worker_core: 6                # DAQIRI RX worker (busy-polls this core at 100 %)
-      processing_core: 7            # capture main thread
-      beam_offset: 0                # global beam numbers of this link: 0, 1
-      reader_cpus: '8,9,0-4'        # cpuset for this link's spectrometer / dump
-    - name: link1                   # the second link, when cabled
-      interface: '0000:01:00.1'     # enp1s0f1np1: check with `ls /sys/bus/pci/devices/*/net`
-      master_core: 15
-      worker_core: 16
-      processing_core: 17
-      beam_offset: 2                # beams 2, 3
-      reader_cpus: '18,19,10-14'
-```
-
-Each link needs its own three cores. The Cortex-X925 cores are 5–9 and 15–19. Optional per link: `udp_port`
-(default `network.channel_port`) and `source_ip` (default `network.source_ip`). The input → beam/pol mapping is
-`adc.inputs`, the exact NCO `adc.nco_mhz`.
+Three kinds of file, all in git: `config/station.yaml` (the boards, the data directory, the observation in use),
+`config/observations/<name>.yaml` (how the data is processed) and `config/boards/<board>.yaml` (one board and the
+host side of its link).
 
 ### Observation config: how the data is processed
 
-`config/observations/<name>.yaml` is the single place for processing choices; `config/station.yaml` names the
-one in use (`observation: default`). `lft3-pipeline run` and `lft3-search` both read it.
+`config/observations/<name>.yaml` holds every processing choice; `config/station.yaml` names the one in use
+(`observation: default`). `lft3-pipeline run` and `lft3-search` both read it.
 
 ```yaml
 spectrometer:
@@ -91,6 +71,7 @@ search:
 triggering:                         # live hits -> raw-voltage dumps; off until the rules are agreed
   enabled: false
   min_snr: 50.0
+  min_abs_drift_hz_s: 0.0           # set to >= one drift step before enabling (see §9)
   single_beam: true                 # not on hits both beams see
   skip_rfi_labels: true
   min_interval_s: 10.0
@@ -105,9 +86,9 @@ Choosing resolution and integration (one stream on the Spark, measured; docs/run
 * Everything keeps real time **while recording** up to 1024 fine channels (149 Hz) at 0.25 s, or 256 at 0.1 s:
   the FBH5 writer manages ~160 MB/s (4 threads), so keep fine channels per board channel / integration time below
   ~4000 per second. Without recording (`record_fine: false`) everything up to 1024 at 0.1 s keeps up.
-* With short integrations keep the search window ~64 s long (`window_spectra` = 64 s / integration): the drift
-  step is channel width / window length, and a signal drifting less than one step is dropped as stationary.
-* Search sensitivity grows as √(fine channels × window duration); the drift step is channel width / window length.
+* The drift step is channel width / window length, and a signal drifting less than one step is dropped as
+  stationary. With short integrations keep the window ~64 s long (`window_spectra` = 64 s / integration).
+* Search sensitivity grows as √(fine channels × window duration).
 * More than 1024 fine channels needs the Hz-resolution path (not built yet) and, for the search, longer
   integrations and `dedoppler_plan: stepped`.
 
@@ -115,6 +96,34 @@ Another observation: copy the file, then `lft3-pipeline run --observation NAME`.
 `--fft-length`, `--integration`, `--no-search` override single values for one run. The run directory gets the
 effective `observation.yaml`. Invalid combinations are refused at start (for example a drift range that never
 crosses one channel within a window, or an FFT length the spectrometer cannot do yet).
+
+### Board config: the host side of a link
+
+`config/boards/<board>.yaml`, section `receiver`:
+
+```yaml
+receiver:
+  links:
+    - name: link0
+      interface: '0000:01:00.0'     # ConnectX PCI function (enp1s0f0np0)
+      master_core: 5                # DAQIRI master
+      worker_core: 6                # DAQIRI RX worker (busy-polls this core at 100 %)
+      processing_core: 7            # capture main thread
+      beam_offset: 0                # global beam numbers of this link: 0, 1
+      reader_cpus: '8,9,0-4'        # spectrometer / dump cpuset; the search uses its non-X925 cores
+    - name: link1                   # a second output: only for a future two-link firmware
+      interface: '0000:01:00.1'     # enp1s0f1np1: check with `ls /sys/bus/pci/devices/*/net`
+      master_core: 15
+      worker_core: 16
+      processing_core: 17
+      beam_offset: 2                # beams 2, 3
+      reader_cpus: '18,19,10-14'
+```
+
+The station has one link per board; a second board on the same Spark uses the other QSFP port, with its own
+`receiver.links` in its own YAML. Each link needs its own three cores. The Cortex-X925 cores are 5–9 and 15–19. Optional per link: `udp_port`
+(default `network.channel_port`) and `source_ip` (default `network.source_ip`). The input → beam/pol mapping is
+`adc.inputs`, the exact NCO `adc.nco_mhz`.
 
 ## 4. Running
 
@@ -140,20 +149,22 @@ lft3-pipeline run --source synthetic --fast --lossless --duration 60   # as fast
 lft3-pipeline run --source file --file cap.pcap --loop                 # replay a tcpdump capture
 ```
 
-**Stop** with Ctrl-C or `--duration`, or from another terminal with `lft3-pipeline stop`. Readers stop first
-and close their files, then the capture. Only one run per board at a time.
+**Stop** with Ctrl-C or `--duration`, or from another terminal with `lft3-pipeline stop`. The search stops first,
+then the readers, which close their files, then the capture. Only one run per board at a time.
 
 **Healthy** looks like this. A status line every 10 s per link:
 
 ```
 rfsoc0-link0: running  60.84 Gb/s | blocks 4600 (partial 0, skipped 0) | missing packets 0 late 0 |
               spectrometer(lag 0, over 0, out 29) dump(lag 0, over 0, out 0)
+rfsoc0-link0-spectra: running spectra ring | spectra 29 | search(lag 0, over 0, windows 0)
 ```
 
 * `60.8 Gb/s` = full band.
 * `partial` / `skipped` / `missing packets` flat = no loss.
 * `lag` near 0 and `over` (overruns) 0 = readers keep up.
-* `out` = spectra written (spectrometer) or dumps done.
+* `out` = spectra written (spectrometer) or dumps done; `windows` = search windows searched (one every 32 s once
+  the first 64 spectra are in).
 
 ## 5. Watching a run
 
@@ -166,9 +177,11 @@ Each run has `<data_dir>/runs/<UTC>_<board>_<source>/`:
 
 | File | Contents |
 |---|---|
-| `plan.txt` | the exact `docker run` commands |
+| `plan.txt` | the exact commands (`docker run …`, and the search's host command) |
+| `observation.yaml` | the observation config of this run, with command-line overrides applied |
 | `<stream>-capture.log` | capture log; a summary line every 5 s (rate, blocks, missing, late, no-slot, readers) |
 | `<stream>-spectrometer.log`, `-dump.log` | reader logs (files opened/closed, overruns, dumps) |
+| `<stream>-search.log` | live search: windows, hits, triggers, every 30 s a summary |
 | `status.jsonl` | the status lines as JSON (time series of all counters) |
 | `nic-<link>.csv` | NIC counters every 5 s (network source); drops / pauses are also printed |
 | `latest/<board>_latest.{json,f32}` | the newest 1 s coarse spectrum, float32 `[beam][6144]`, axes in the JSON |
@@ -185,6 +198,7 @@ lft3-pipeline trigger --pre 0.8 --post 0.2 --label "FRB candidate"
 
 * Writes `<data_dir>/dumps/<board>/<board>_<UTC>_beam<N>.0000.raw` (GUPPI RAW: 6144 channels, 2 pols,
   8-bit complex, 6.5536 µs samples) plus a `.json` summary, and appends a line to `<data_dir>/triggers.log`.
+* The live search can send the same triggers itself when enabled (§9).
 * The window must still be in the ring: about 2 s back, set by `--ring-seconds`. The longest window is set by
   `--dump-seconds` (default 1 s = 7.5 GB per link, ~3 s to write).
 * One dump at a time; at most about one every 10 s.
@@ -230,7 +244,9 @@ print(r.status())                          # rates, counters, readers
 v = r.voltages()                           # CuPy view of the raw-voltage ring (read-only)
 ```
 
-See `docs/runtime.md` §5 for a complete reader loop (C++ or Python).
+`lft3.ring.RingReader` registers a Python reader in a ring's reader table, so it shows in `lft3-pipeline status`
+and can be lossless; the live search uses it on the spectra ring (`Ring("rfsoc0-link0-spectra").spectra()`).
+See `docs/runtime.md` §5 for complete reader loops (C++ and Python).
 
 ## 9. Searching the spectra (hyperseti)
 
@@ -254,6 +270,8 @@ memory traffic, and searches the last 64 spectra every 32 s:
   of its board (`lft3-dump`), at most every 10 s. The dump covers the moment the hit is found, not the
   window itself (the voltage ring holds ~2 s), so it records signals that are still there. Triggers are in
   `<data_dir>/triggers.log` with the hit in the label, and in the window record.
+  On live data the strongest hits left after the zero-drift drop are stationary signals measured one step off
+  zero (±18.6 Hz/s), so set `min_abs_drift_hz_s` to at least one step before enabling triggers.
 * Drift resolution = channel width / window length (18.6 Hz/s for 1.19 kHz and 64 s), and reported drifts are
   good to about one step. S/N ≥ 20 by default.
 
@@ -262,14 +280,14 @@ memory traffic, and searches the last 64 spectra every 32 s:
 ```bash
 lft3-search FILE.h5                   # one file (one beam): hits in <dir>/hits/<file>.csv
 lft3-search --watch [--once]          # every finished file in <data_dir>/spectra/<board>/
-lft3-search FILE.h5 --whole-file      # the whole file as one window (old behaviour, more sensitive to slow drifts)
+lft3-search FILE.h5 --whole-file      # the whole file as one window (more sensitive to slow drifts)
 lft3-search --live --stream rfsoc0-link0   # what lft3-pipeline starts
 ```
 
 * Hits within two fine channels of a board spur (every 125 MHz) or in Wi-Fi channel 1 are labelled `rfi:...`,
   not removed.
 * A file search reads ~1 GB files and loads the memory bus: don't run `--watch` or `--whole-file` on the capture
-  Spark during a live capture (it once cost 277 packets at the NIC). The live search does not have this problem.
+  Spark during a live capture, where it can make the NIC drop packets. The live search does not have this problem.
 
 ## 10. Troubleshooting
 
@@ -280,7 +298,9 @@ lft3-search --live --stream rfsoc0-link0   # what lft3-pipeline starts
 | rate 0 Gb/s, blocks not increasing | board not streaming: `lft3-board status`; destination MAC: `lft3-board set-dest-mac`; link: `ip link` |
 | rate ≈ 60.8 Gb/s but `missing packets` rising | if `nic-<link>.csv` shows `rx_out_of_buffer` / `rx_discards_phy`, the host lost them; if those are flat, the packets never arrived (board or link) |
 | `missing packets` rising with `rx_discards_phy` in `nic-<link>.csv` | the NIC could not write to host memory fast enough: another heavy job (search, large copies) is loading the memory bus; stop it |
-| reader `over` (overruns) rising, `lag` large | the GPU or memory is overloaded: other GPU jobs, too many links (§10), or a slow disk under the writer; the capture itself is unaffected |
+| reader `over` (overruns) rising, `lag` large | the GPU or memory is overloaded: other GPU jobs, too many links (§11), or a slow disk under the writer; the capture itself is unaffected |
+| `WARNING live search … exited` | see `<stream>-search.log`; usually the search venv is missing (`scripts/setup_search_env.sh`). The run goes on without the search |
+| search `lag` rising, windows late | a window takes longer than 32 s to search: finer channels or shorter integrations than the search can handle (docs/runtime.md §6); use a longer window step or turn off the search |
 | `Permission denied` in a reader log | the data directory is not writable by you or your groups |
 | `no ring … within 30 s` (reader) | the capture died or uses another stream name; check the capture log |
 | dump reply `error no data in the ring yet` | trigger sent before the first block; wait a second |
@@ -292,7 +312,7 @@ Measured (`pipeline/bench/capacity/`; details in `docs/runtime.md` §6):
 
 | Streams (links) | Beams | Fits? | GPU used |
 |---|---|---|---|
-| 2 (two boards) | 4 | yes, with room for (throttled) searches | 46 % |
+| 2 (two boards) | 4 | yes, with room for the live search | 46 % |
 | 4 (four boards) | 8 | compute yes, but needs 4 network links into the Spark (switch, unverified) | 87 % |
 | 5 | 10 | passes the synthetic test, no headroom for the NICs | 96 % |
 | 6 | 12 | no | — |

@@ -1,7 +1,7 @@
 # RFSoC monitoring and control (M&C)
 
-Status (2026-11-12): first implementation in `src/lft3/board/` and `src/lft3/monitoring/`, driven from
-`lft3-board`. Every command has run against the live board (§4.1). Unit tests use a fake board that
+Implemented in `src/lft3/board/` and `src/lft3/monitoring/`, driven from `lft3-board`. Every command has run
+against the live board (§4.1). Unit tests use a fake board that
 checks the bring-up matches the notebook step for step. Covers sections 7 ("Backend monitoring and
 control") and 8 ("System management, monitoring and control") of `docs/full_architecture.pdf`.
 
@@ -12,11 +12,11 @@ control") and 8 ("System management, monitoring and control") of `docs/full_arch
 | Backend monitored and controlled through casperfpga | `lft3.board` wraps casperfpga; all register access goes through it |
 | Operate many boards together (6 in the full system) | `lft3/board/station.py`: every operation on all boards in parallel, per-board results, barrier-released sync |
 | Diagnostic data from the boards (spectra, ADC samples, triggered dumps) | `lft3/board/capture.py` + `lft3-board snapshot/capture` (§3.1) |
-| A register map describing what each register does | `lft3/board/registers.py` (first version; firmware request #9 asks for the authoritative one) |
+| A register map describing what each register does | `lft3/board/registers.py` (firmware request #9 asks for the authoritative one) |
 | Physical metrics: temperatures, voltages, currents, power | `lft3/board/sensors.py` reads the board's sysfs over SSH. **Needs an SSH key** on the board |
 | Firmware metrics: error counts, packet metrics | `lft3/board/telemetry.py`: snapshots, counter rates, health checks |
 | Diagnostic spectra, antenna/beam RMS | Firmware FFT/ADC snapshots (`lft3-board snapshot`); coarse quick-look spectra from the GPU runtime (docs/user_guide.md §5, §7) |
-| Single source of truth for instrument configuration, in git | `config/boards/<name>.yaml`, loaded by `lft3.config` |
+| Single source of truth for instrument configuration, in git | `config/station.yaml`, `config/boards/<name>.yaml` and `config/observations/<name>.yaml`, loaded by `lft3.config` |
 | Coordinator on a master node; lock against concurrent reconfiguration | Per-board lock file now. The coordinator is still to design (§6) |
 | CLI first; metrics/logging/alerting (Prometheus/Grafana suggested) | `lft3-board` CLI; Prometheus `/metrics` endpoint and JSON lines |
 
@@ -57,12 +57,11 @@ lft3-board set-dest-mac [--mac aa:bb:..]         # 100GbE destination (default f
 lft3-board sync | trigger                        # sync pulse / manual DDR dump + re-arm
 ```
 
-`-b NAME` (or a path to a YAML file) selects the board; the default is `rfsoc0`. Commands that change
-the board take `/tmp/lft3-board-<name>.lock`. A second operator gets "board is being reconfigured by
+Every command acts on all boards of the station; `-b NAME` (or a path to a YAML file, repeatable) selects
+boards. Commands that change a board take `/tmp/lft3-board-<name>.lock`. A second operator gets "board is being reconfigured by
 pid … user … since …" instead of interleaving register writes.
 
-`lft3-board start` performs the sequence from the bring-up notebook (`mts_ddr_8way.ipynb`, previously
-`scripts/start_firmware.py`): program, set destination MAC, RFDC init + LMK/LMX, MTS, mixer event source,
+`lft3-board start` performs the sequence from the bring-up notebook (`mts_ddr_8way.ipynb`): program, set destination MAC, RFDC init + LMK/LMX, MTS, mixer event source,
 NCO (fine mixers + header fields), DDR/requantiser/packet mask, PPS drift period, then a sync. Differences
 from the notebook: it also writes `packetizer_fid` and `expected_clk_period` from the config. It does not
 fire a DDR dump unless `--trigger` is given. It takes ~10 s including programming.
@@ -110,7 +109,7 @@ and cron).
 | `lft3-board trigger` | trig_cnt 0→1, `packetizer_out_vld_ddr_cnt` = 2^26 words (4 GiB), and the host saw the wire rate step from 60.8 to ~71 Gb/s for ~3.5 s |
 | write `expected_clk_period` | holds the value (plain software register). `pps_drift_err_cnt` still counts every PPS, because the measured period is ~3800 cycles from nominal (see below) |
 
-### First run on the live board (2026-11-12)
+### 4.2 First run on the live board (2026-11-12)
 
 Everything configured is as expected: 915 528 packets/s, no FIFO loss, header NCOs −2031, fid 0, mask 0x3f,
 destination MAC unicast to the Spark. Two clock findings:
@@ -118,17 +117,19 @@ destination MAC unicast to the Spark. Two clock findings:
 * **The sample clock measures −24.6 ppm relative to the PPS.** `raw_cycles_per_pps` = 156 246 153–180,
   steady. The PPS is **temporary and not fixed properly yet**, so this is not yet a statement about the
   clock: it is either the board's free-running reference (the LMK file in use is the internal-reference one)
-  or the PPS source. It has to be re-measured with a proper PPS. If it holds, then: Every sky frequency scales with the sampling clock, so a
-  2 GHz line is ~49 kHz (≈ 40 fine channels at 1.2 kHz) from where the FBH5 axis says it is. The board
+  or the PPS source. It has to be re-measured with a proper PPS. If it holds, every sky frequency scales with the
+  sampling clock, so a 2 GHz line is ~49 kHz (≈ 40 fine channels at 1.2 kHz) from where the FBH5 axis says it is.
+  The 1800 MHz test tone of 2026-11-13 appeared +22.5 ppm high, consistent with the board clock, not the PPS,
+  being off. The board
   spurs still land on exact 125 MHz multiples because they come from the same clock. Fix: a disciplined
   10 MHz reference (the firmware repo has `rfsoc4x2_lmk_CLKin0_extref_10M_PL_122M88_LMXREF_245M76.txt` in
   `examples/1pps_ex`, for a different PL clock) or a measured correction in the writer.
 * **`expected_clk_period` defaults to 208 333 332** (a 208.33 MHz clock). It is a plain software register.
-  `lft3-board start` now writes 156250000 (`timing.expected_clk_period`). The drift counter will only stop
+  `lft3-board start` writes 156250000 (`timing.expected_clk_period`). The drift counter will only stop
   counting once clock and PPS agree. `clk_cycles_per_pps` returns a different value on every read and is
   marked unreliable; `raw_cycles_per_pps` is the usable period.
 
-Both are added to `docs/firmware_requests.md`.
+Both are firmware request #10 (`docs/firmware_requests.md`).
 
 ## 5. Metrics
 
@@ -143,8 +144,7 @@ Prometheus text format on `http://<host>:<port>/metrics` (`lft3-board monitor --
 
 The same content as one JSON object per interval goes to `--jsonl FILE`.
 
-**Storage.** The exporter keeps only the latest values: there is no database behind it yet, and only the
-`--jsonl` file persists. Prometheus *is* the database. It scrapes `/metrics` every N seconds and stores the samples
+**Storage.** The exporter keeps only the latest values, and only the `--jsonl` file persists. Prometheus *is* the database. It scrapes `/metrics` every N seconds and stores the samples
 in its own on-disk time-series database (default retention 15 days, configurable by time or size). For
 years of history, add remote storage (VictoriaMetrics, Thanos or Mimir) behind it. Grafana queries Prometheus.
 
@@ -161,13 +161,14 @@ only publishes what it reads.
    any katcp request exposes them.
 2. **Clock reference:** once the PPS is fixed, re-measure. If the offset is real: a disciplined 10 MHz +
    matching LMK file, or record the measured ppm in the products and correct the frequency axis. It affects
-   every frequency we write.
+   every frequency in the products.
 3. **Metrics storage:** deploy Prometheus (its built-in time-series database) + Grafana (§5).
 4. **Coordinator:** one process on the master node owning system state (boards, receivers, observation
    config), with the board lock moved from `/tmp` to the coordinator. The CLI becomes a client of it.
    Candidates: a small service with a REST/katcp interface. Decide once there is more than one board.
-5. **Pipeline metrics:** the runtime counts packets/blocks/loss/reader lag in each ring and `lft3-pipeline run --metrics-port` exports them (docs/user_guide.md §5); exporting
-   those to the same Prometheus is the next step for end-to-end monitoring.
+5. **Pipeline metrics:** the runtime counts packets, blocks, loss, reader lag and search windows in each ring, and
+   `lft3-pipeline run --metrics-port` exports them (docs/user_guide.md §5). Scraping those into the same
+   Prometheus gives end-to-end monitoring.
 6. **Firmware diagnostics:** `f_engineN_power_snapshot*`, `ewma_snapshot*` and the ADC snapshots
    (`listener.py` reads them) could feed low-rate diagnostic spectra and per-input RMS (arch doc §2).
 7. **Remote power control:** `lft3-earth-main/host/scripts/power-rfsoc.py` drives a network power strip;

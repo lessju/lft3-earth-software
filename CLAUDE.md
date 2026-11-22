@@ -200,7 +200,7 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
   Blackwell per board (57 %), 3 servers × 2 boards. GeForce excluded (no GPUDirect RDMA, licence).
 * **Warp FFT kernel** (64/128/256 points, one warp per FFT, `__shfl_xor`, no shared memory): 0.30 ms vs 0.50 ms per
   block, matches the DFT reference; `LFT3_FINESPEC_KERNEL=shared` forces the old kernel.
-* **Soak 2026-11-13 (2 h, 23 DDR + 23 raw dumps): no loss of the system's own making**, 0 reader overruns, DDR-dump
+* **Soak 2026-11-13 (2 h, 23 DDR + 23 raw dumps): no packets lost in the runtime**, 0 reader overruns, DDR-dump
   gaps did not recur (0/23). **But** a hyperseti search running on the Spark made the NIC drop 277 packets
   (`rx_discards_phy`, memory-bus contention; host pause frames didn't help, the board probably ignores 802.3x).
   Don't run heavy GPU/memory jobs on the capture host during a live capture.
@@ -236,8 +236,8 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
   0.38 s per window per 32 s, kept up at 5.5× real time.
 * **1 h live soak (2026-11-20) with the search: 0 loss, `rx_discards_phy` unchanged**, 110/110 windows, 0
   overruns. Real data: ~3700 hits/window, almost all zero-drift local RFI (Wi-Fi, spurs, other). hyperseti's
-  `merge_hits` took 13.9 s/window → `core.merge_hits` (identical results on soak data, 180× faster, ~0.7 s per
-  beam per window now).
+  `merge_hits` took 13.9 s/window → `core.merge_hits` (identical results on soak data, 180× faster; ~0.7 s per
+  beam offline, 3.6–3.9 s per window live = 12 % of the 32 s step).
 * **Resolution benchmark (2026-11-20, pipeline/bench/resolution):** with 4-thread FBH5 compression (~160 MB/s;
   single thread was ~50) one stream keeps real time while recording up to Nf 1024 @ 0.25 s or Nf 256 @ 0.1 s;
   without recording everything up to Nf 1024 @ 0.1 s. Short integrations need longer windows (in spectra): the
@@ -328,7 +328,8 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 ## Known gaps
 
 * Nothing synthesises ADC packets on port 40000 yet (`lft3-pcap synth` emits channel packets only).
-* Live search hits are not yet turned into triggers, clustered across windows/beams, or RFI-filtered beyond labels.
+* Live search hits are not clustered across windows/beams/boards; no RFI mask before the search; search
+  triggers are built but off until the rules (incl. a min drift of one step) are agreed.
 * Frequency sign is confirmed by the 125 MHz spurs; the input → beam/pol mapping still needs an injected tone.
 
 ## Working conventions

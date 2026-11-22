@@ -19,7 +19,7 @@ lft3-board sync | trigger
 ```
 
 Multi-board sync: the sync pulses are released from a barrier, so boards sync within ~ms of each other.
-Sample-accurate alignment needs a PPS-armed sync in firmware (`docs/firmware_requests.md` #4).
+Sample-accurate alignment needs a PPS-armed sync in firmware (`docs/firmware_requests.md` #3).
 
 ## 2. Data from the boards
 
@@ -48,9 +48,9 @@ are only ADC noise (~12 counts RMS), so the dump is mostly 0 and ±1. For noise-
 ## 3. The real-time pipeline (`lft3-pipeline`)
 
 Full guide: `docs/user_guide.md` (how it works inside: `docs/runtime.md`). Per link of a board: lft3-capture →
-GPU ring → lft3-spectrometer (fine + coarse FBH5) and lft3-dump (GUPPI RAW on trigger), each in its own container.
-With the observation's `search.live` (default) a live hyperseti search reads the spectra from GPU memory and writes
-hits to `<data_dir>/hits/<board>/live_<stream>_<UTC>.csv`. Resolution, integration, products and search
+GPU ring → lft3-spectrometer (fine + coarse FBH5) and lft3-dump (GUPPI RAW on trigger), each in its own container,
+and the live hyperseti search (a host process in the search venv), which reads the spectra from GPU memory and
+writes hits to `<data_dir>/hits/<board>/live_<stream>_<UTC>.csv`. Resolution, integration, products and search
 settings are in `config/observations/<name>.yaml`, named by `config/station.yaml`.
 
 ```bash
@@ -64,15 +64,16 @@ lft3-pipeline run --observation NAME                # another config/observation
 lft3-pipeline run --no-search                       # without the live drift search
 lft3-pipeline run --search-triggers                 # live hits trigger raw-voltage dumps (off by default)
 lft3-pipeline run --dry-run                         # show the docker commands only
-lft3-pipeline status                                # every ring on this host: rate, loss, readers
+lft3-pipeline status                                # every ring on this host: rate, loss, readers, search
 lft3-pipeline trigger --label test                  # raw-voltage dump of every link (GUPPI RAW)
 lft3-pipeline stop                                  # stop a run from another terminal
 ```
 
-Stopping: Ctrl-C, `--duration` or `lft3-pipeline stop` stop the readers (files closed) and then the captures.
-Only one run per board at a time. Run directory `<data_dir>/runs/<UTC>_<board>_<source>/`: one log per process,
-`plan.txt`, `status.jsonl`, `nic-<link>.csv` (NIC drop/pause counters, also printed when they move), `latest/`.
-`lft3-board trigger` and `lft3-pipeline trigger` append to `<data_dir>/triggers.log`.
+Stopping: Ctrl-C, `--duration` or `lft3-pipeline stop` stop the search, then the readers (files closed), then the
+captures. Only one run per board at a time. Run directory `<data_dir>/runs/<UTC>_<board>_<source>/`: one log per
+process, `plan.txt`, `observation.yaml` (the effective configuration), `status.jsonl`, `nic-<link>.csv` (NIC
+drop/pause counters, also printed when they move), `latest/`. `lft3-board trigger`, `lft3-pipeline trigger` and
+search triggers append to `<data_dir>/triggers.log`.
 
 Soak test (1 h, with a DDR dump every 5 min):
 ```bash
@@ -106,7 +107,9 @@ s = fbh5.read_spectra(path, fmin=1999.9, fmax=2000.1, flatten=True)   # s.data [
 c = captures.load(capture_path)                                        # c.data [input, sample], c.attrs
 ```
 
-FBH5 files also open with blimpy, turboSETI and hyperseti.
+FBH5 files also open with blimpy, turboSETI and hyperseti. `lft3-search FILE.h5` runs the drift search on a
+finished file with the same windows as the live search (`docs/user_guide.md` §9); not on the capture Spark during
+a live run.
 
 ### Interactive viewer (`lft3-view`)
 
@@ -134,10 +137,11 @@ scripts/clean_data.sh --older-than 7 --yes     # only files not modified for 7 d
 scripts/clean_data.sh --only dumps --yes       # one category: spectra | hits | runs | dumps | captures
 ```
 
-## 5. What you should see with nothing connected (2026-11-12)
+## 5. What you should see with nothing connected
 
 * Board spurs at 1750, 1875, 2000, 2250 MHz (+ 2500 MHz outside the streamed band), weaker at 1600, 2125,
   2200, 2375 MHz. At 1.19 kHz resolution, the 2000 MHz spur has ±30 kHz sidebands.
 * The Spark's own Wi-Fi (channel 1): a 20 MHz OFDM band at 2402–2422 MHz with its centre-carrier null at
   2412 MHz, bursting in time. Other 2.4 GHz devices appear around 2440–2460 MHz.
-* `lft3-board status`: everything OK except `sample_clock_vs_pps` (INFO: −24.6 ppm against the temporary PPS).
+* `lft3-board status`: everything OK except `sample_clock_vs_pps` (INFO: about −24 ppm against the temporary PPS).
+* Live search: about 160 hits per 64 s window after the zero-drift drop, almost all labelled Wi-Fi.

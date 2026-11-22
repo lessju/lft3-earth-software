@@ -1,6 +1,7 @@
-# LFT3-Earth backend sizing (first pass, 2026-11-14)
+# LFT3-Earth backend sizing
 
-What compute does the full instrument need, if the DGX Sparks are only for development? This scales the
+Measurements up to 2026-11-20. What compute does the full instrument need, if the DGX Sparks are only for
+development? This scales the
 single-board measurements on the Spark (`docs/runtime.md` §6, `pipeline/bench/`) to the full station and maps them
 onto PCIe GPU servers. GPUs considered: NVIDIA RTX PRO Blackwell cards, with L40S and L4 for comparison. Not
 considered: H100/H200/B200 or NVIDIA's own servers.
@@ -14,13 +15,11 @@ are the wideband search and the fused Hz-resolution channeliser. §8 lists the c
 | | Value | Source |
 |---|---|---|
 | Boards | 6 RFSoC 4x2: 5 UHF + 1 VHF, fid 0–5 | xlsx *Final Specs* |
-| Links | **1 × 100 GbE per board → 6 streams** | xlsx *Final Specs*; confirmed by the user 2026-11-14 |
+| Links | **1 × 100 GbE per board → 6 streams** | xlsx *Final Specs*; confirmed 2026-11-14 |
 | Per stream | 4 inputs = 2 dual-pol beams, 6144 × 152.6 kHz channels (937.5 MHz), 8+8-bit | packet_format.md |
 | Per stream rate | 3.75 G complex samples/s, 7.5 GB/s, 60.95 Gb/s on the wire (+10 Gb/s during a DDR dump) | packet_format.md, live |
 | Station | 6 streams, 12 dual-pol beams, **366 Gb/s** continuous, 426 Gb/s if all boards dump at once | |
 | VHF board | Same packet format, but 2 of its 4 inputs are zero padding, so only half of its processing is real | xlsx *Data Rates* |
-
-Earlier docs sized for "5 boards × 2 links". That was wrong, and those docs are now corrected.
 
 ## 2. Unit of cost: the GB10-equivalent
 
@@ -75,7 +74,9 @@ injected 0.05 Hz/s tone in every run.
 * The kernel reaches ~3×10¹⁰ cell sums/s, well below what the GPU can do. A tiled kernel (or seticore's Taylor
   tree) may be several times faster, but that is not measured. Until it is, **the search is the largest compute
   item**: about 3× the Hz channeliser.
-* At the interim 1.2 kHz resolution the search is negligible: about 1000× fewer channels.
+* At the interim 1.2 kHz resolution the search is small: the live search takes ~1 % of a GB10 per stream on
+  synthetic data and ~12 % on live data (3.6–3.9 s per 32 s step: real data gives ~4000 raw hits per window,
+  and the search shares the GPU with the capture).
 
 ### Live search cost against resolution (measured 2026-11-20, `pipeline/bench/resolution/resolution.py`)
 
@@ -85,14 +86,6 @@ idle GB10, scaled to a full-band stream: per gulp ~21 ms floor + ~0.15 ms per dr
 At 1.16 Hz and 1 s spectra that is ~30 GB10 per stream, so the figures above (10 s spectra, 32-spectrum windows,
 `stepped` plan) remain the planning basis; the `optimal` plan the 1.2 kHz configuration uses would cost ~6× more
 trials there. Details and the whole-chain matrix: docs/runtime.md §6.
-
-Raw buffer for search triggers: a live-search trigger can only dump what is still in the raw buffer. To record the
-window a hit came from, the buffer must cover window + search latency: ~70 s at 1.2 kHz with 64 s windows,
-i.e. ~500 GB per stream of host RAM (7.5 GB/s); with the 2 s ring a trigger records the signal as it is when found.
-
-Recording: the FBH5 writer compresses ~160 MB/s per stream with 4 threads on the GB10 (50 MB/s single-threaded),
-enough for the fine product up to ~4000 fine channels per board channel per second of integration. Production
-servers with more cores per stream scale this linearly; it is CPU, not GPU, load (§5).
 
 ## 4. Station totals and GPU count
 
@@ -122,7 +115,9 @@ cheaper RTX PRO 5000 per board also fits, but only with no headroom.
   (runtime.md decision 13). Put each NIC and its GPUs under the same PCIe root or switch.
 * **PCIe:** per stream, 7.6 GB/s NIC → GPU. Gen5 x16 GPU slots and a Gen5 NIC have room to spare.
 * **CPU:** per stream, 1 DAQIRI busy-poll core, the master and processing threads, and ~1 core for readers and
-  writers, so ~4 cores. Add the search host process, compression and monitoring. A **single-socket EPYC (Zen 5),
+  writers, so ~4 cores. Add the search host process, compression and monitoring. Writing the fine spectra is CPU
+  work: the FBH5 writer compresses ~160 MB/s per stream on 4 GB10 cores (50 MB/s on one), enough up to ~4000
+  fine channels per board channel per second of integration; more cores scale it linearly. A **single-socket EPYC (Zen 5),
   24–32 cores**, avoids NUMA placement problems and has 128 PCIe Gen5 lanes.
 * **RAM** (host), per stream:
   * search window: 32 × 6.4 GB = 206 GB in fp32 or 103 GB in fp16, plus the window being filled (~1.5×);
@@ -137,8 +132,12 @@ cheaper RTX PRO 5000 per board also fits, but only with no headroom.
   | 10 s | 75 GB | ~512 GB |
   | 30 s | 225 GB | ~768 GB–1 TB |
 
+  The buffer also limits **search triggers**: a live-search trigger can only dump what is still in the buffer.
+  To record the window a hit came from, it must cover window + search latency: ~70 s at 1.2 kHz with 64 s
+  windows, ~500 GB per stream. With the 2 s ring a trigger records the signal as it is when found.
+
   Don't put this buffer on NVMe. Writing 7.5 GB/s continuously is ~650 TB/day per stream, which wears out drives
-  in weeks. DDR5 prices have risen sharply in 2025–26, so RAM may cost as much as a GPU.
+  in weeks. DDR5 prices rose sharply in 2025–26, so RAM may cost as much as a GPU.
 
 ## 6. Storage
 
@@ -167,8 +166,8 @@ from the data links. That holds weeks to months, depending on the trigger rate.
 | Uplink | 25 GbE to storage / head node; 1 GbE to the board M&C network |
 
 * Ballpark: ~$40–60k per server, mostly GPUs and RAM; **~$150–200k for 3**. Add a head node (~$5–8k: M&C,
-  Prometheus/Grafana, orchestration) and 0.5 PB of storage (~$50–80k). Prices are early-2026 street prices and
-  move fast. Get quotes.
+  Prometheus/Grafana, orchestration) and 0.5 PB of storage (~$50–80k). Prices are November 2026 street prices
+  and move fast. Get quotes.
 * Failure domain: one server = 2 boards. A **4th identical server** is worth considering. It is a hot spare for
   any 2 boards (re-cable or switch), a development box, and capacity for offline reprocessing or heavier
   searches.
@@ -221,7 +220,8 @@ Upgrade the GPUs later. Choose the chassis (PSU, airflow, slots) for the RTX PRO
    * check every place that reads GPU-ring data from the CPU. On the Spark that is free (unified memory); on a
      discrete card it needs an explicit copy (coarse quick-look derivation, dump writer).
 2. **Rent or borrow one RTX PRO 6000 server** for a week:
-   * run `pipeline/bench/capacity` (now ×N streams per GPU) and `pipeline/bench/search/bench_hyperseti.py`;
+   * run `pipeline/bench/capacity` (×N streams per GPU), `pipeline/bench/resolution` and
+     `pipeline/bench/search/bench_hyperseti.py`;
    * check the bandwidth scaling assumption in §2;
    * check that GPUDirect RDMA works with a ConnectX NIC.
 3. **Benchmark the wideband search** (heimdall on detected coarse data, chosen DM range and pulse widths). It is
