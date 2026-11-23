@@ -25,6 +25,35 @@ def netdev_for_pci(pci: str) -> str | None:
     return names[0] if names else None
 
 
+MIN_MTU = 8284          # an 8298-byte channel frame minus the 14-byte Ethernet header
+
+
+def netdev_mtu(netdev: str, sys_class_net: Path = Path("/sys/class/net")) -> int | None:
+    """MTU of a network device from sysfs, None if unknown."""
+    try:
+        return int((sys_class_net / netdev / "mtu").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def mtu_problems(pcis: list[str], sys_bus_pci: Path = Path("/sys/bus/pci/devices"),
+                 sys_class_net: Path = Path("/sys/class/net")) -> list[str]:
+    """One message per receive interface whose MTU is too small for the channel frames (8298 B). The NIC drops
+    such frames silently, so a run would receive nothing; the MTU resets to 1500 on every reboot."""
+    out = []
+    for pci in pcis:
+        d = sys_bus_pci / pci / "net"
+        names = sorted(p.name for p in d.iterdir()) if d.is_dir() else []
+        if not names:
+            continue
+        mtu = netdev_mtu(names[0], sys_class_net)
+        if mtu is not None and mtu < MIN_MTU:
+            out.append(f"{names[0]} ({pci}) has MTU {mtu}, below the {MIN_MTU} the 8298-byte channel frames need: "
+                       f"every packet would be dropped. Fix (root, once per boot): "
+                       f"sudo scripts/link_setup.sh {names[0]}")
+    return out
+
+
 def parse_ethtool(text: str) -> dict[str, int]:
     out = {}
     for line in text.splitlines():

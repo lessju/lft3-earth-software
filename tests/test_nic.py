@@ -24,3 +24,16 @@ def test_nic_logger_deltas_and_alert(tmp_path):
     i = 1 + log.keys.index("rx_packets_phy")
     assert [r.split(",")[i] for r in rows] == ["100", "100"]
     assert rows[1].split(",")[1 + DROP_COUNTERS.index("rx_out_of_buffer")] == "4"
+
+
+def test_mtu_problems_flags_small_mtu(tmp_path):
+    from lft3.monitoring.nic import mtu_problems
+
+    pci, net = tmp_path / "pci", tmp_path / "net"
+    for dev, func, mtu in (("enp1s0f0np0", "0000:01:00.0", "1500"), ("enp1s0f1np1", "0000:01:00.1", "9000")):
+        (pci / func / "net" / dev).mkdir(parents=True)
+        (net / dev).mkdir(parents=True)
+        (net / dev / "mtu").write_text(mtu + "\n")
+    msgs = mtu_problems(["0000:01:00.0", "0000:01:00.1", "0000:99:00.0"], pci, net)
+    assert len(msgs) == 1
+    assert "enp1s0f0np0" in msgs[0] and "MTU 1500" in msgs[0] and "link_setup.sh enp1s0f0np0" in msgs[0]

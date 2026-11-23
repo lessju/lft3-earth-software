@@ -46,7 +46,7 @@ import yaml
 
 from lft3.config import ConfigError, load_station_config, observation_to_dict, validate_observation
 from lft3.monitoring.metrics import MetricsServer
-from lft3.monitoring.nic import NicLogger, netdev_for_pci
+from lft3.monitoring.nic import NicLogger, mtu_problems, netdev_for_pci
 from lft3.pipeline.runtime import BUILD, SEARCH_PYTHON, SOURCES, Process, RunOptions, plan_run
 from lft3.ring import Ring, list_streams, send_dump_command, to_prometheus
 
@@ -203,6 +203,13 @@ def cmd_run(a, st, board) -> int:
         print(f"lft3-pipeline: the live search needs the search venv ({SEARCH_PYTHON}): "
               "scripts/setup_search_env.sh, or --no-search", file=sys.stderr)
         return 1
+    if opts.source == "network":
+        links = [lk for lk in board.links if not opts.links or lk.name in opts.links]
+        problems = mtu_problems([lk.interface for lk in links])
+        if problems:
+            for msg in problems:
+                print(f"lft3-pipeline: {msg}", file=sys.stderr)
+            return 1
     running = _running_containers(f"lft3-{board.name}-")
     running += [f"search pid {p}" for p in _search_pids(board.name).values()]
     if running:

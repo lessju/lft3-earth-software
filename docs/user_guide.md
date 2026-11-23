@@ -295,6 +295,7 @@ lft3-search --live --stream rfsoc0-link0   # what lft3-pipeline starts
 |---|---|
 | `already running: lft3-rfsoc0-link0-…` | a previous run is still up: `lft3-pipeline stop -b rfsoc0` |
 | `the capture did not create its ring` | see `<stream>-capture.log`: DAQIRI failed (wrong `interface`, NIC used by another process, RDMA devices not passed in: try `LFT3_CAPTURE_PRIVILEGED=1`) or the binaries are missing (`make pipeline`) |
+| `… has MTU 1500, below the 8284 …` | the port's MTU resets to 1500 on every reboot and the 8298-byte frames would all be dropped: `sudo scripts/link_setup.sh <netdev>` (also raises `rmem_max` for DDR dumps) |
 | rate 0 Gb/s, blocks not increasing | board not streaming: `lft3-board status`; destination MAC: `lft3-board set-dest-mac`; link: `ip link` |
 | rate ≈ 60.8 Gb/s but `missing packets` rising | if `nic-<link>.csv` shows `rx_out_of_buffer` / `rx_discards_phy`, the host lost them; if those are flat, the packets never arrived (board or link) |
 | `missing packets` rising with `rx_discards_phy` in `nic-<link>.csv` | the NIC could not write to host memory fast enough: another heavy job (search, large copies) is loading the memory bus; stop it |
