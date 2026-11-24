@@ -258,7 +258,8 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
   journalctl `--since` is local time, append "UTC"). NetworkManager DHCP retries did not coincide.
 * Fix (user): TV off, `enp1s0f0np0` unmanaged by NetworkManager. Soak B (13:14–15:14 UTC, same load): **0 lost**,
   1 073 210 complete blocks, all 46 dumps complete, 0 overruns, 223/223 windows (2.5 s median). Correlation only.
-  Still to do (user, sudo): `nmcli device set enP2p1s0f0np0 managed no`.
+  Both 100G halves (`enp1s0f0np0`, `enP2p1s0f0np0`) are now unmanaged (checked 2026-11-24 with `nmcli`). `nmcli device
+  set` does not survive a reboot, nor does MTU 9000: host setup after boot is in docs/operations.md §3.
 * `lft3-capture --warmup-blocks N` (default 2): the first N blocks after start/restart are dropped if incomplete,
   not counted as missing (one log line). `rx_out_of_buffer` jumps by ~40k at every start-up: normal.
 
@@ -275,7 +276,8 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 ## Captures and pipeline runs (2026-11-12)
 
 * DDR dump via UDP socket loses ~55% while `net.core.rmem_max` is the default 212 kB (socket RcvbufErrors);
-  needs `sudo sysctl -w net.core.rmem_max=268435456` (not done yet; Claude has no sudo).
+  needs `sudo sysctl -w net.core.rmem_max=268435456` (set as of 2026-11-24; `scripts/link_setup.sh` does it,
+  lost on reboot unless persisted in /etc/sysctl.d).
 * `adc_lsb: 6` makes noise-only 4-bit dumps ~0/±1; fine for real signals presumably, ~2 for noise tests.
 * The pipeline container needs only docker-group membership (it runs privileged as root); Claude can run it.
 * Spectra show a 152.6 kHz ripple (coarse channel −3 dB edges): `lft3-plot --flatten` / `read_spectra(flatten=True)`.
@@ -313,6 +315,7 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
   `triggers.log` + `config/known_rfi.json` (JSON so the C++ server and the page need no YAML). Per-channel
   normalisation, strips and drift measurement are client-side. Planned, not started: shareable URL/PNG/npy export,
   and two beams side by side with linked zoom.
+* Lists only `<data_dir>/spectra` by default (`--scan DIR`, repeatable; `--scan .` = whole data dir, incl. bench/reference).
 * Index via `H5Dchunk_iter` (6 ms vs 150 ms per-chunk lookups); offsets are elements in HDF5 1.14.6.
 * New runtime (other session, 2026-11-13) also writes a coarse product to `spectra/<board>/quicklook/` (6144 ch,
   152.6 kHz, nfpc 1, same names/timestamps, root attrs lft3_mode/stream/obs_id/beam_offset). The viewer lists it as

@@ -53,6 +53,19 @@ and the live hyperseti search (a host process in the search venv), which reads t
 writes hits to `<data_dir>/hits/<board>/live_<stream>_<UTC>.csv`. Resolution, integration, products and search
 settings are in `config/observations/<name>.yaml`, named by `config/station.yaml`.
 
+**Host network, as root after each boot** (none of these settings persist unless made permanent):
+
+```bash
+sudo scripts/link_setup.sh enp1s0f0np0 10.17.16.10/24   # MTU 9000, the boards' destination IP, rmem_max
+sudo nmcli device set enp1s0f0np0 managed no            # NetworkManager off both halves of the 100G port
+sudo nmcli device set enP2p1s0f0np0 managed no
+```
+
+The MTU resets to 1500 on every reboot, and `lft3-pipeline run` refuses a network run below 8284 (the 8298-byte
+frames would all be dropped). The IP is only needed by kernel tools (tcpdump, the DDR-dump socket); the capture
+does not use it. NetworkManager must not touch the capture's interface. To make that permanent, list both ports
+under `unmanaged-devices` in `/etc/NetworkManager/conf.d/`.
+
 ```bash
 lft3-pipeline run                                   # live stream, 1.19 kHz channels, 1 s spectra, until Ctrl-C
 lft3-pipeline run --duration 600 --integration 10   # 10 minutes of 10 s spectra
@@ -118,6 +131,7 @@ For browsing whole files (pan/zoom from the full band down to single fine channe
 ```bash
 make viewer     # once; builds in the lft3-runtime container and links lft3-view into the venv's bin/
 lft3-view       # prints http://<spark>:8687/?token=...; open it in a browser
+lft3-view --scan reference      # lists <data_dir>/spectra only by default; this shows the reference runs instead
 ```
 
 An overview of a 1-hour file takes ~1.7 s and zooms take tens of ms. It also follows files that are still being

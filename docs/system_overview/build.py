@@ -26,8 +26,8 @@ from svglib.svglib import svg2rlg
 HERE = Path(__file__).resolve().parent
 FIG = HERE / "figures"
 OUT = HERE / "lft3_system_overview.pdf"
-VERSION = "1.2"
-DATE = dt.date(2026, 11, 20).strftime("%d %B %Y")
+VERSION = "1.3"
+DATE = dt.date(2026, 11, 24).strftime("%d %B %Y")
 
 # ---------------------------------------------------------------------------------------------- fonts, styles
 FONTS = {"Sans": "DejaVuSans.ttf", "Sans-Bold": "DejaVuSans-Bold.ttf", "Sans-Oblique": "DejaVuSans-Oblique.ttf",
@@ -276,7 +276,8 @@ def cover():
     meta = [["Scope", "One RFSoC 4x2 board streaming to one NVIDIA DGX Spark, and the sizing of the full station: "
                       "6 boards with one 100 GbE link each"],
             ["State", "Implemented and running live at 60.8 Gb/s with a live drift search on the GPU spectra; "
-                      "one-hour soak without packet loss. Production hardware sized, not yet bought"],
+                      "two-hour soak with the search and dumps running, without packet loss. Production hardware sized, not yet "
+                      "bought"],
             ["Version", f"{VERSION} · {DATE}"]]
     t = Table([[Paragraph(a, S["cellb"]), Paragraph(b, S["cell"])] for a, b in meta],
               colWidths=[2.6 * cm, A4[0] - 4.2 * cm - 2.6 * cm], hAlign="LEFT")
@@ -310,8 +311,8 @@ def content():
       "shows hour-long files interactively.",
       "A <b>live narrowband drift search</b> (hyperseti) reads the spectra straight from GPU memory while the run "
       "goes on, and reports hits within a second of each 64-second window. Stationary hits, which are local "
-      "interference, are dropped. A one-hour soak with the search running lost no packets, and its results are "
-      "identical to searching the same spectra from files. Hits can trigger raw-voltage dumps; this is off until "
+      "interference, are dropped. A two-hour soak with the search running and a raw-voltage and DDR dump every five "
+      "minutes lost no packets, and the search results are identical to searching the same spectra from files. Hits can trigger raw-voltage dumps; this is off until "
       "the trigger rules are agreed.",
       "One observation configuration file sets the resolution, integration time, products and search for runs and "
       "searches alike.",
@@ -593,7 +594,8 @@ def content():
       "duplicates and packets for already-sealed blocks are rejected and counted;",
       "if t jumps back by more than 1024 blocks, the board was re-synced: open blocks are flushed and the time base "
       "starts over;",
-      "capture starts only at a block boundary, so the first block is complete.")
+      "capture starts only at a block boundary, so the first block is complete. The first 2 blocks after a start or "
+      "re-sync are dropped if incomplete, without counting as loss: the receive queue is still filling.")
     P("Each new block gets the <b>next ring slot in allocation order</b>, not a slot derived from its block number. "
       "After a re-sync, block numbers restart and would otherwise collide with blocks still being sealed.")
 
@@ -915,7 +917,10 @@ def content():
       "access, locked memory and the RDMA devices, and is not privileged. Readers run as the invoking user with no "
       "network at all, and talk to the capture only through shared memory and the GPU. The live search runs on the "
       "host as the invoking user, in a Python environment with CuPy and hyperseti, pinned to efficiency cores. All "
-      "binaries are built in one container image with CUDA 13. No step needs root on the host.")
+      "binaries are built in one container image with CUDA 13. No step of a run needs root. The host is prepared "
+      "as root after each boot, unless made permanent: MTU 9000 on the 100 GbE port (a run refuses to start below 8284 bytes, since the 8298-byte "
+      "frames would all be dropped), and NetworkManager kept off the 100 GbE ports so that nothing else touches the "
+      "interface the capture owns.")
 
     # ------------------------------------------------------------------------------------------------ 10
     H1("Performance and capacity")
@@ -1153,6 +1158,10 @@ def content():
            ["Backpressure margin of 8 slots, tests only", "parity run found lossless readers skipping blocks with "
                                                           "margin 0"],
            ["Capture container not privileged", "three capabilities verified live at line rate"],
+           ["Drop incomplete warm-up blocks", "the first blocks after a start miss packets while the receive queue "
+                                              "fills; this is start-up, not loss"],
+           ["NetworkManager off the 100 GbE ports", "nothing but the capture should touch the interface; the 2-hour "
+                                                    "soak in this setup lost no packets"],
            ["Integration windows on absolute block numbers", "one time grid for all readers and boards"],
            ["Warp FFT kernel", "shared-memory kernel barrier-bound at 0.50 ms; warp kernel 0.30 ms, verified against "
                                "a DFT"],
@@ -1177,8 +1186,10 @@ def content():
           [0.38, 0.62], "The main design decisions.")
     P("These choices were validated end to end: identical output to the CyberEther implementation, to float "
       "rounding, on deterministic synthetic data; unit tests for every component in C++, CUDA and Python; and a "
-      "2-hour live soak with a DDR dump and a raw-voltage dump every five minutes, and a one-hour live soak with the "
-      "search. Neither lost packets in the runtime or at the NIC, apart from 277 packets the NIC dropped while a "
+      "2-hour live soak with a DDR dump and a raw-voltage dump every five minutes, a one-hour live soak with the "
+      "search, and on 23 November a 2-hour live soak with the search and both dumps every five minutes. The last, "
+      "on a host prepared as in §9, lost no packets: 1 073 210 complete blocks, all 46 dumps complete, no reader "
+      "overruns and 223 of 223 search windows. The only NIC drops in all soaks, 277 packets, happened while a "
       "file search ran on the same Spark.")
 
     # ------------------------------------------------------------------------------------------------ 13
