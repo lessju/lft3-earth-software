@@ -18,6 +18,7 @@ void Assembler::restart() {
     anySealed_ = false;
     latest_ = 0;
     lastSealed_ = 0;
+    sealedSinceStart_ = 0;
     stats_.restarts++;
 }
 
@@ -94,9 +95,16 @@ void Assembler::seal(std::map<std::uint64_t, OpenBlock>::iterator it, std::vecto
     sealed.buffer = block.buffer;
     sealed.received = block.received;
 
+    const bool warmup = sealedSinceStart_ < config_.warmupBlocks;
+    sealedSinceStart_++;
+
     if (block.received == ppb) {
         stats_.blocksComplete++;
         sealed.emit = true;
+    } else if (warmup) {
+        stats_.warmupBlocksDropped++;
+        stats_.warmupPacketsMissing += ppb - block.received;
+        sealed.emit = false;
     } else {
         stats_.packetsMissing += ppb - block.received;
         if (config_.zeroFill) {

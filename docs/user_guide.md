@@ -34,6 +34,10 @@ make test && make lint       # Python tests
   instead), and readers run as you.
 * The data directory (`data_dir` in `config/station.yaml`, `/opt/lft3arth/data`) must be writable by you or one
   of your groups.
+* Run the Spark **headless** (no monitor or TV on its HDMI, or `sudo systemctl isolate multi-user.target`) and
+  keep **NetworkManager off the 100G ports**:
+  `sudo nmcli device set enp1s0f0np0 managed no; sudo nmcli device set enP2p1s0f0np0 managed no`.
+  Display re-probes coincided with short packet losses that no counter recorded (docs/runtime.md decision 22).
 * Keep the Spark for the pipeline: one link needs ~23 GB of the 128 GB unified memory and up to half the GPU
   at 2 links. Large GPU services (LLM servers) will cause overruns.
 
@@ -297,7 +301,8 @@ lft3-search --live --stream rfsoc0-link0   # what lft3-pipeline starts
 | `the capture did not create its ring` | see `<stream>-capture.log`: DAQIRI failed (wrong `interface`, NIC used by another process, RDMA devices not passed in: try `LFT3_CAPTURE_PRIVILEGED=1`) or the binaries are missing (`make pipeline`) |
 | `… has MTU 1500, below the 8284 …` | the port's MTU resets to 1500 on every reboot and the 8298-byte frames would all be dropped: `sudo scripts/link_setup.sh <netdev>` (also raises `rmem_max` for DDR dumps) |
 | rate 0 Gb/s, blocks not increasing | board not streaming: `lft3-board status`; destination MAC: `lft3-board set-dest-mac`; link: `ip link` |
-| rate ≈ 60.8 Gb/s but `missing packets` rising | if `nic-<link>.csv` shows `rx_out_of_buffer` / `rx_discards_phy`, the host lost them; if those are flat, the packets never arrived (board or link) |
+| rate ≈ 60.8 Gb/s but `missing packets` rising | if `nic-<link>.csv` shows `rx_out_of_buffer` / `rx_discards_phy`, the host lost them. If those are flat, compare `rx_vport_unicast_packets` with the capture's packets received (minus 524 288 per DDR dump): more at the port means the host lost them silently, typically a display re-probe or NetworkManager on the port (§2); equal means they never arrived (board or link) |
+| `warm-up: dropped … start-up block(s)` in the capture log | normal: the first blocks after a start were incomplete and were dropped without counting as loss (`--warmup-blocks`, default 2) |
 | `missing packets` rising with `rx_discards_phy` in `nic-<link>.csv` | the NIC could not write to host memory fast enough: another heavy job (search, large copies) is loading the memory bus; stop it |
 | reader `over` (overruns) rising, `lag` large | the GPU or memory is overloaded: other GPU jobs, too many links (§11), or a slow disk under the writer; the capture itself is unaffected |
 | `WARNING live search … exited` | see `<stream>-search.log`; usually the search venv is missing (`scripts/setup_search_env.sh`). The run goes on without the search |

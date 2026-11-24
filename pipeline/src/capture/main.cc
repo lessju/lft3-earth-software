@@ -49,6 +49,7 @@ const char* kUsage = R"(lft3-capture --stream NAME [options]
   --slots N | --ring-seconds S      ring size (default 2 s)
   --nco-mhz F --obs-id S --config-hash S
   --max-open-blocks N --max-block-lag N   (default 4, 2)
+  --warmup-blocks N         drop the first N blocks if incomplete, without counting them as loss (default 2)
   --packets-per-burst N --max-bursts N    (default 1024, 64)
   synthetic/file: --fast (no real-time pacing) --backpressure (wait for lossless readers)
                   --wait-readers N (start once N lossless readers are attached) --stop-after-blocks N
@@ -68,7 +69,7 @@ struct Options {
     Layout layout;
     std::uint64_t slots = 0;
     double ringSeconds = 2.0, ncoMHz = 0.0;
-    std::uint64_t maxOpenBlocks = 4, maxBlockLag = 2, packetsPerBurst = 1024, maxBursts = 64;
+    std::uint64_t maxOpenBlocks = 4, maxBlockLag = 2, warmupBlocks = 2, packetsPerBurst = 1024, maxBursts = 64;
     bool fast = false, backpressure = false, loop = false;
     std::uint64_t waitReaders = 0, stopAfterBlocks = 0;
     std::int64_t toneChannel = 4000;
@@ -158,6 +159,7 @@ class Capture {
     bool daqiri_ = false;
     bool aligned_ = false;
     std::uint64_t restartsSeen_ = 0;
+    std::uint64_t warmupLogged_ = 0;
     double unixT0_ = 0.0;
     std::uint64_t received_ = 0, filtered_ = 0;
     std::uint64_t published_ = 0;
@@ -226,6 +228,7 @@ bool Capture::create() {
     ac.packetsPerSpectrum = l_.packetsPerSpectrum();
     ac.maxOpenBlocks = o_.maxOpenBlocks;
     ac.maxBlockLag = o_.maxBlockLag;
+    ac.warmupBlocks = o_.warmupBlocks;
     ac.zeroFill = true;
     asm_ = std::make_unique<Assembler>(ac, [this]() { return ring_.acquireSlot(); });
 
@@ -593,6 +596,11 @@ bool Capture::promote() {
 
 void Capture::publishStats() {
     const auto& a = asm_->stats();
+    if (a.warmupBlocksDropped != warmupLogged_) {
+        warmupLogged_ = a.warmupBlocksDropped;
+        LFT3_INFO("warm-up: dropped %lu incomplete start-up block(s) (%lu packets not counted as missing)",
+                  static_cast<unsigned long>(a.warmupBlocksDropped), static_cast<unsigned long>(a.warmupPacketsMissing));
+    }
     auto& s = ring_.control().stats;
     s.packetsReceived.store(received_, std::memory_order_relaxed);
     s.packetsFiltered.store(filtered_, std::memory_order_relaxed);
@@ -774,6 +782,7 @@ bool ParseOptions(const Args& a, Options& o) {
     o.ncoMHz = a.f64("nco-mhz", 0.0);
     o.maxOpenBlocks = static_cast<std::uint64_t>(a.i64("max-open-blocks", 4));
     o.maxBlockLag = static_cast<std::uint64_t>(a.i64("max-block-lag", 2));
+    o.warmupBlocks = static_cast<std::uint64_t>(a.i64("warmup-blocks", 2));
     o.packetsPerBurst = static_cast<std::uint64_t>(a.i64("packets-per-burst", 1024));
     o.maxBursts = static_cast<std::uint64_t>(a.i64("max-bursts", 64));
     o.fast = a.flag("fast");

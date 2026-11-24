@@ -10,6 +10,8 @@
 //   * seals blocks strictly in time order: a block is sealed when complete, or when it is more than
 //     `maxBlockLag` blocks behind the newest block seen (then its missing slots are reported so the
 //     caller can zero-fill them, or the block is dropped if zero-fill is disabled),
+//   * drops the first `warmupBlocks` sealed blocks if they are incomplete (the stream is picked up mid-block and
+//     the receive queue is still filling at start-up); their empty slots are not counted as missing,
 //   * detects stream restarts (t jumping backwards by more than `restartThresholdBlocks` blocks, e.g.
 //     after a firmware re-sync) and starts over instead of treating everything as late.
 //
@@ -29,6 +31,7 @@ struct AssemblerConfig {
     std::uint64_t maxOpenBlocks = 4;
     std::uint64_t maxBlockLag = 2;
     std::uint64_t restartThresholdBlocks = 1024;
+    std::uint64_t warmupBlocks = 0;      // first N sealed blocks (after start or a restart): dropped if incomplete
     bool zeroFill = true;
 
     std::uint64_t packetsPerBlock() const { return spectraPerBlock * packetsPerSpectrum; }
@@ -53,6 +56,8 @@ struct AssemblerStats {
     std::uint64_t blocksDropped = 0;        // sealed incomplete and not emitted
     std::uint64_t blocksSkipped = 0;        // no packet at all arrived for the block
     std::uint64_t restarts = 0;
+    std::uint64_t warmupBlocksDropped = 0;  // incomplete warm-up blocks, not emitted, not counted as partial
+    std::uint64_t warmupPacketsMissing = 0; // their empty slots (not in packetsMissing)
 };
 
 class Assembler {
@@ -100,6 +105,7 @@ class Assembler {
     bool anySealed_ = false;
     std::uint64_t latest_ = 0;
     std::uint64_t lastSealed_ = 0;
+    std::uint64_t sealedSinceStart_ = 0;
     AssemblerStats stats_;
 };
 

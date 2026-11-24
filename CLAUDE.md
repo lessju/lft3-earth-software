@@ -250,6 +250,18 @@ A "rumination" doc with open questions, plus KZA's answers in red. It is **not**
 * The old periodic synthetic generator repeats every block → integrated spectra never fluctuate: useless for
   searches (fixed pattern adds coherently). Use `--random-noise` for anything search-related.
 
+## Soaks 2026-11-23 (docs/runtime.md decisions 22-23)
+
+* Soak A (08:02–10:03 UTC, 2 h, 23 DDR + 23 raw dumps, search on): 185 673 packets lost in 5 events, plus 7 829 in
+  the first 2 blocks. Board `t` continuous; NIC vport count − DAQIRI received − 2^19 per DDR dump → lost **inside the
+  host**, recorded by no counter. All 5 coincided with X display hot-plug re-probes (TV on HDMI, gdm-x-session journal;
+  journalctl `--since` is local time, append "UTC"). NetworkManager DHCP retries did not coincide.
+* Fix (user): TV off, `enp1s0f0np0` unmanaged by NetworkManager. Soak B (13:14–15:14 UTC, same load): **0 lost**,
+  1 073 210 complete blocks, all 46 dumps complete, 0 overruns, 223/223 windows (2.5 s median). Correlation only.
+  Still to do (user, sudo): `nmcli device set enP2p1s0f0np0 managed no`.
+* `lft3-capture --warmup-blocks N` (default 2): the first N blocks after start/restart are dropped if incomplete,
+  not counted as missing (one log line). `rx_out_of_buffer` jumps by ~40k at every start-up: normal.
+
 ## Board M&C findings (docs/monitoring_control.md)
 
 * **The lab PPS is temporary, not fixed properly** (`timing.pps: temporary`). The clock measures −24.6 ppm

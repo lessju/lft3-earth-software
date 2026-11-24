@@ -186,6 +186,30 @@ In the order they were made. Each one is backed by a measurement on this machine
     HDF5's own byte shuffle) and writes them with `H5Dwrite_chunk` into the same filtered dataset: identical
     compressed bytes to HDF5's path (unit test), decoded by every reader unchanged; the all-zero mask chunk is
     compressed once. Spectra whose width is not a whole number of chunks use the old path.
+22. **The capture host runs without a display and without NetworkManager on the 100G ports** (2026-11-23).
+    A 2 h live soak (08:02–10:03 UTC, same load as item 12) lost 185 673 packets in 5 short events
+    (08:03:25, 08:05:35, 08:06:15, 09:06:30, 09:53:15). Attribution:
+    * not the board: its `t` against wall clock (`unix_time_at_t0 + t / 152 587.89` − time) stayed continuous;
+    * not the NIC port: `rx_vport_unicast_packets` (from `nic-<link>.csv`, interpolated to `status.jsonl`
+      times), minus DAQIRI `packets_received`, minus 524 288 per DDR dump, puts the loss *inside the host*,
+      between the vport and DAQIRI's queue, and no counter (`rx_discards_phy`, `rx_out_of_buffer`, DAQIRI
+      fillers/errors) recorded it;
+    * all 5 events coincided with X server display hot-plug re-probes (a TV on the Spark's HDMI, "connected"
+      lines in the gdm-x-session journal). NetworkManager DHCP retries every 45 s on the capture port did not
+      coincide with them.
+
+    After switching the TV off and making `enp1s0f0np0` unmanaged (`nmcli device set … managed no`), a second
+    2 h soak (2026-11-23 13:14–15:14 UTC, 6.59×10⁹ packets, 23 DDR + 23 raw dumps, live search on) lost **0
+    packets**: 1 073 210 complete blocks, NIC drop counters flat after start-up, every DDR dump ≈ 2^19 packets at
+    the port, every raw dump complete, 7 201 spectra with 0 overruns, 223/223 search windows (median 2.5 s, max
+    3.3 s per 32 s step). This is a correlation, not a proven mechanism, but the setup is cheap: run the capture
+    host headless (or with no display attached) and keep NetworkManager off both 100G netdevs.
+23. **Warm-up blocks** (`lft3-capture --warmup-blocks N`, default 2). The first soak's only other loss was 7 829
+    packets in the first 2 blocks, while DAQIRI's queue and the GPU were still settling. The first N blocks sealed
+    after a start or a restart are dropped (not published) if they are incomplete, and counted in
+    `warmupBlocksDropped` / `warmupPacketsMissing` and one log line instead of as missing. A complete warm-up
+    block is published as usual; when one is dropped, readers see the stream start ~6.7 ms later. In the second soak no warm-up
+    block was incomplete.
 
 ## 3. Code map
 
@@ -234,6 +258,8 @@ In the order they were made. Each one is backed by a measurement on this machine
    * blocks are sealed strictly in time order: when complete, or when more than `max_block_lag` (2) blocks behind
      the newest;
    * if t jumps back more than 1024 blocks, the stream has restarted (re-sync).
+   * the first `warmup_blocks` (2) blocks sealed after a start or restart are dropped if incomplete, not
+     counted as missing (decision 23).
 3. A new block gets the **next ring slot in allocation order**: `RingWriter::acquireSlot`. Slots are not tied to
    block numbers, because a restart would otherwise collide with blocks still being sealed. Acquiring invalidates
    the slot (`seq = invalid`) before any GPU write.
@@ -504,5 +530,7 @@ capacity in units of real time (≥ 1 keeps up). Raw results: `docs/system_overv
   entry in `config/boards/rfsoc0.yaml`, moved to that board's YAML). Confirm its PCI function, UDP
   port and source IP when it is cabled.
 * Time reference from a PPS-aligned sync (`docs/firmware_requests.md`).
+* The second half of the 100G port (`enP2p1s0f0np0`) is still managed by NetworkManager: make it unmanaged
+  too (decision 22). Repeat a soak with a display attached to confirm (or rule out) the re-probe mechanism.
 * Test whether the board honours 802.3x pause frames (decision 13); if it did, NIC buffer overflows would turn
   into short delays instead of loss.

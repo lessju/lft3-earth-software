@@ -171,6 +171,42 @@ TEST_CASE("Assembler drops incomplete blocks without zero-fill, and restarts", "
     REQUIRE(a.stats().restarts == 1);
 }
 
+TEST_CASE("Assembler drops incomplete warm-up blocks without counting them as missing", "[lft3][receiver][assembler]") {
+    AssemblerConfig c;
+    c.spectraPerBlock = 2;
+    c.packetsPerSpectrum = 1;
+    c.maxOpenBlocks = 4;
+    c.maxBlockLag = 1;
+    c.warmupBlocks = 2;
+    c.restartThresholdBlocks = 10;
+    std::int64_t next = 0;
+    Assembler a(c, [&]() { return next++; });
+    Assembler::Placement p;
+    std::vector<SealedBlock> sealed;
+
+    // Picked up mid-stream: block 50 half full, block 51 half full, then blocks 52 and 53 half full.
+    for (std::uint64_t t : {101, 102, 104, 106, 108, 109}) a.accept(t, 0, p);
+    a.collect(sealed);   // latest = 54: 50..52 are stale
+    REQUIRE(sealed.size() == 3);
+    REQUIRE_FALSE(sealed[0].emit);   // warm-up
+    REQUIRE_FALSE(sealed[1].emit);   // warm-up
+    REQUIRE(sealed[2].emit);         // past warm-up: zero-filled and counted
+    REQUIRE(a.stats().warmupBlocksDropped == 2);
+    REQUIRE(a.stats().warmupPacketsMissing == 2);
+    REQUIRE(a.stats().packetsMissing == 1);
+    REQUIRE(a.stats().blocksPartial == 1);
+
+    // A firmware re-sync starts a new warm-up.
+    a.flush(sealed);
+    sealed.clear();
+    a.accept(1, 0, p);   // block 0, half full
+    a.accept(6, 0, p);   // block 3
+    a.collect(sealed);
+    REQUIRE(a.stats().restarts == 1);
+    REQUIRE_FALSE(sealed.at(0).emit);
+    REQUIRE(a.stats().warmupBlocksDropped == 3);
+}
+
 TEST_CASE("Assembler reports NoBuffer when the pool is empty", "[lft3][receiver][assembler]") {
     AssemblerConfig c;
     c.spectraPerBlock = 1;
