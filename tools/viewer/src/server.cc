@@ -1,7 +1,10 @@
 // lft3-view: browser viewer for FBH5 spectra.
 //
-//   lft3-view [--data-dir /opt/lft3arth/data] [--bind 0.0.0.0] [--port 8687] [--threads N] [--web-dir DIR]
-//             [--triggers-log FILE] [--rfi-file FILE] [--no-token]
+//   lft3-view [--data-dir /opt/lft3arth/data] [--scan DIR]... [--bind 0.0.0.0] [--port 8687] [--threads N]
+//             [--web-dir DIR] [--triggers-log FILE] [--rfi-file FILE] [--no-token]
+//
+// Only the --scan directories (relative to --data-dir, default "spectra") are searched for *.h5, so benchmark
+// and reference files elsewhere in the data dir are not listed. --scan . lists everything.
 //
 // Serves the page (web/index.html) and a small API. All data work (parallel reads, max/mean reduction to the
 // requested screen size, coarse-channel flattening) happens here; the browser only colours and draws.
@@ -60,6 +63,7 @@ namespace {
 
 struct Options {
     std::string data_dir = "/opt/lft3arth/data";
+    std::vector<std::string> scan;         // relative to data_dir; default {"spectra"}
     std::string bind = "0.0.0.0";
     int port = 8687;
     size_t threads = 0;
@@ -170,7 +174,7 @@ size_t qnum(const httplib::Request& r, const char* k, size_t dflt) {
 // Runs of contiguous files, rebuilt at most every 2 s (a listing stats every *.h5 and reopens changed ones).
 class Catalog {
 public:
-    explicit Catalog(FileCache& cache) : cache_(cache) {}
+    Catalog(FileCache& cache, std::vector<std::string> scan) : cache_(cache), scan_(std::move(scan)) {}
 
     struct Run {
         std::string id;                      // first file, relative to the data dir
@@ -221,12 +225,16 @@ private:
         std::vector<F> files;
         std::error_code ec;
         const std::string& root = cache_.root();
-        for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
-             it != fs::recursive_directory_iterator(); it.increment(ec)) {
-            if (ec) break;
-            if (!it->is_regular_file(ec) || it->path().extension() != ".h5") continue;
-            std::string rel = fs::relative(it->path(), root).string();
-            if (auto e = cache_.tryGet(rel)) files.push_back({rel, e, parseRunName(rel)});
+        for (const auto& dir : scan_) {
+            const fs::path top = fs::path(root) / dir;
+            if (!fs::is_directory(top, ec)) continue;
+            for (auto it = fs::recursive_directory_iterator(top, fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (ec) break;
+                if (!it->is_regular_file(ec) || it->path().extension() != ".h5") continue;
+                std::string rel = fs::relative(it->path(), root).string();
+                if (auto e = cache_.tryGet(rel)) files.push_back({rel, e, parseRunName(rel)});
+            }
         }
         // group by run name, in time order; unparsable names are runs of their own
         std::sort(files.begin(), files.end(), [](const F& a, const F& b) {
@@ -265,6 +273,7 @@ private:
     }
 
     FileCache& cache_;
+    std::vector<std::string> scan_;   // directories searched, relative to the data dir
     std::mutex refresh_mu_, mu_;
     bool built_ = false;
     std::chrono::steady_clock::time_point built_at_;
@@ -381,6 +390,7 @@ int main(int argc, char** argv) {
         };
         try {
             if (a == "--data-dir") opt.data_dir = next();
+            else if (a == "--scan") opt.scan.push_back(next());
             else if (a == "--bind") opt.bind = next();
             else if (a == "--port") opt.port = std::stoi(next());
             else if (a == "--threads") opt.threads = std::stoul(next());
@@ -389,7 +399,7 @@ int main(int argc, char** argv) {
             else if (a == "--rfi-file") opt.rfi_file = next();
             else if (a == "--no-token") opt.token = false;
             else if (a == "-h" || a == "--help") {
-                std::printf("usage: lft3-view [--data-dir DIR] [--bind ADDR] [--port N] [--threads N] "
+                std::printf("usage: lft3-view [--data-dir DIR] [--scan DIR]... [--bind ADDR] [--port N] [--threads N] "
                             "[--web-dir DIR] [--triggers-log FILE] [--rfi-file FILE] [--no-token]\n");
                 return 0;
             } else {
@@ -403,7 +413,8 @@ int main(int argc, char** argv) {
 
     if (opt.triggers_log.empty()) opt.triggers_log = (fs::path(opt.data_dir) / "triggers.log").string();
     FileCache cache(opt.data_dir);
-    Catalog catalog(cache);
+    if (opt.scan.empty()) opt.scan = {"spectra"};
+    Catalog catalog(cache, opt.scan);
     Reducer reducer(opt.threads);
     std::mutex reduce_mu;   // one reduction at a time; each already uses every core
     const std::string token = opt.token ? randomToken() : "";
@@ -521,7 +532,9 @@ int main(int argc, char** argv) {
 
     char host[256] = "localhost";
     ::gethostname(host, sizeof host);
-    std::cout << "lft3-view: data " << cache.root() << ", " << reducer.threads() << " threads\n"
+    std::string scanned;
+    for (const auto& d : opt.scan) scanned += (scanned.empty() ? "" : ", ") + d;
+    std::cout << "lft3-view: data " << cache.root() << " (scanning " << scanned << "), " << reducer.threads() << " threads\n"
               << "  open http://" << (opt.bind == "0.0.0.0" ? std::string(host) : opt.bind) << ":" << opt.port << "/"
               << (token.empty() ? "" : "?token=" + token) << std::endl;
     if (!srv.listen(opt.bind, opt.port)) {

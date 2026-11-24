@@ -10,7 +10,9 @@ tools/viewer/build/lft3-view                  # prints http://<host>:8687/?token
 tools/viewer/build/lft3-view --data-dir /opt/lft3arth/data --port 8687 --bind 127.0.0.1   # local only
 ```
 
-Options: `--data-dir` (default `/opt/lft3arth/data`, searched recursively for `*.h5`), `--bind` (default
+Options: `--data-dir` (default `/opt/lft3arth/data`), `--scan DIR` (repeatable, relative to the data dir; default
+`spectra`, searched recursively for `*.h5`, so `bench/` and `reference/` are not listed; `--scan reference` or
+`--scan .` to see those), `--bind` (default
 `0.0.0.0`), `--port` (8687), `--threads` (default: all cores), `--triggers-log` (default
 `<data-dir>/triggers.log`), `--rfi-file` (default `config/known_rfi.json` in this repo), `--no-token`, `--web-dir`.
 The binary runs directly on the host (HDF5 is linked statically).
